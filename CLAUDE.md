@@ -3,40 +3,58 @@
 ## Project overview
 
 TemplateCache is a modular LLM response caching system that sits between an
-application and an LLM API. It reduces output token usage by 55–75% on
+application and an LLM API. It reduces output token usage by 55–95% on
 repetitive and mixed query traffic by reusing cached response structures and
 only regenerating variable parts of a response.
 
-The system is novel in that it combines dynamic template extraction from LLM
-outputs, slot-level confidence scoring against historical fills, and
-dependency-ordered partial inference into a single drop-in caching primitive.
-No existing open-source system does all three simultaneously.
+The system combines dynamic template extraction from LLM outputs, slot-level
+confidence scoring against historical fills, dependency-ordered partial
+inference, gap detection for partial cache hits, and multi-query splitting
+into a single drop-in caching primitive.
+
+Runs 100% locally by default using sentence-transformers for embeddings and
+Ollama for LLM generation. No API keys required.
 
 ---
 
 ## Architecture
 
-The pipeline has three self-contained modules. Nothing outside these modules
+The pipeline has three self-contained modules plus utility layers for
+multi-query splitting and gap detection. Nothing outside these modules
 should talk to Redis or the LLM API directly.
 ```
 User query
     │
     ▼
-IntentRouter.route()          — does a template exist for this query type?
+split_multi_query()           — multiple distinct topics?
     │
-    ├── miss → full LLM generation → extract template → async write-back
+    ├── yes → route each sub-question independently
     │
-    └── hit → SlotEngine.fill()   — fill template with query specifics
+    └── no  → single query path
                   │
-                  ├── confident slots → served from CacheStore
-                  │
-                  └── uncertain slots → targeted LLM generation
-                              │
-                              ▼
-                        Response stitcher → final response
-                              │
-                              ▼
-                        Async write-back → CacheStore
+                  ▼
+        IntentRouter.route()  — does a template exist for this query type?
+              │
+              ├── miss → full LLM generation → extract template → async write-back
+              │
+              └── hit → detect_query_gaps() — does the query ask for more than cached?
+                            │
+                            ├── no gaps → serve cached template directly
+                            │
+                            └── gaps found → SlotEngine.fill(gaps=gaps)
+                                      │
+                                      ├── confident slots → served from CacheStore
+                                      ├── uncertain slots → targeted LLM generation
+                                      └── supplement slots → targeted LLM for gaps
+                                                │
+                                                ▼
+                                          Response stitcher → final response
+                                                │
+                                                ▼
+                                          Async write-back → CacheStore
+    │
+    ▼
+Combine sub-results (if multi-query) → final response
 ```
 
 ### Module responsibilities
@@ -48,9 +66,9 @@ question: does a reusable template exist?
 
 **`modules/slot_engine.py` — SlotEngine**
 Loads the template for an intent, checks slot confidence, fills uncertain
-slots via targeted LLM calls in dependency order, stitches fills into the
-skeleton. Answers one question: what does this template look like filled with
-this query's specifics?
+slots via targeted LLM calls in dependency order, creates supplement slots
+for detected gaps, stitches all fills into the skeleton. Answers one
+question: what does this template look like filled with this query's specifics?
 
 **`modules/cache_store.py` — CacheStore**
 Redis-backed persistence for templates, slot records, and intent centroids.
@@ -62,11 +80,11 @@ modules talk to Redis exclusively through this class.
 ## File structure
 ```
 templatecache/
-├── main.py                  # TemplateCache entry point, query() method
+├── main.py                  # TemplateCache entry point, query() and _query_single()
 ├── config.py                # All tunable constants, never hardcode elsewhere
 ├── modules/
 │   ├── router.py            # IntentRouter
-│   ├── slot_engine.py       # SlotEngine
+│   ├── slot_engine.py       # SlotEngine (includes supplement slot logic)
 │   └── cache_store.py       # CacheStore
 ├── models/
 │   ├── template.py          # ResponseTemplate dataclass
@@ -74,31 +92,42 @@ templatecache/
 │   └── intent.py            # IntentCentroid dataclass
 ├── utils/
 │   ├── embedder.py          # embed(), cosine_similarity(), batch_embed()
-│   └── extractor.py         # extract_template(), determine_variant()
+│   ├── extractor.py         # extract_template(), determine_variant(),
+│   │                        # detect_query_gaps(), split_multi_query()
+│   └── llm.py               # llm_call() — Ollama (local) or Gemini (remote)
 ├── demo/
 │   ├── app.py               # FastAPI app, /query and /stats endpoints
+│   ├── frontend.html         # Dark-themed UI with stitch visualization
 │   └── savings_log.py       # SavingsLog, in-memory request log
-└── tests/
-    ├── test_router.py
-    ├── test_slot_engine.py
-    └── test_cache_store.py
+├── tests/
+│   ├── test_router.py
+│   ├── test_slot_engine.py
+│   └── test_cache_store.py
+seed_cache.py                # Seeds 100 example query-response pairs into Redis
+start.sh                     # Startup script, auto-detects Python and local mode
+.env                         # Environment config (gitignored)
 ```
 
 ---
 
 ## Key constants (config.py)
 
-| Constant | Default | Purpose |
-|---|---|---|
-| `INTENT_SIMILARITY_THRESHOLD` | 0.90 | Cosine distance cutoff for intent match |
-| `SLOT_CONFIDENCE_THRESHOLD` | 0.85 | Similarity score to serve slot from cache |
-| `UNCERTAIN_SLOT_FALLBACK_RATIO` | 0.5 | Fraction of uncertain slots that triggers full generation fallback |
-| `CONFIDENCE_DECAY_FACTOR` | 0.95 | Per-period decay multiplier for slot confidence scores |
-| `CONFIDENCE_DECAY_DAYS` | 30 | Period length for decay calculation |
-| `EMBEDDING_MODEL` | text-embedding-3-small | Must match model used to build centroids |
-| `LLM_MODEL` | gpt-4o-mini | Swap here only, never inside modules |
-| `VARIANT_SHORT_MAX_TOKENS` | 80 | Response length ceiling for short variant |
-| `VARIANT_DETAILED_MIN_TOKENS` | 200 | Response length floor for detailed variant |
+| Constant | Default (local) | Default (remote) | Purpose |
+|---|---|---|---|
+| `USE_LOCAL_EMBEDDINGS` | true | false | Use sentence-transformers instead of Gemini embeddings |
+| `USE_LOCAL_LLM` | true | false | Use Ollama instead of Gemini for generation |
+| `OLLAMA_MODEL` | gemma3:4b | — | Local LLM model name |
+| `OLLAMA_BASE_URL` | http://localhost:11434 | — | Ollama server URL |
+| `LOCAL_EMBEDDING_MODEL` | all-MiniLM-L6-v2 | — | Local embedding model |
+| `INTENT_SIMILARITY_THRESHOLD` | 0.55 | 0.90 | Cosine cutoff for intent match (lower for local models) |
+| `SLOT_CONFIDENCE_THRESHOLD` | 0.50 | 0.85 | Similarity score to serve slot from cache |
+| `UNCERTAIN_SLOT_FALLBACK_RATIO` | 0.5 | 0.5 | Fraction of uncertain slots that triggers fallback |
+| `CONFIDENCE_DECAY_FACTOR` | 0.95 | 0.95 | Per-period decay multiplier for slot confidence |
+| `CONFIDENCE_DECAY_DAYS` | 30 | 30 | Period length for decay calculation |
+| `EMBEDDING_MODEL` | — | gemini-embedding-001 | Remote embedding model |
+| `LLM_MODEL` | — | gemini-2.0-flash | Remote LLM model |
+| `VARIANT_SHORT_MAX_TOKENS` | 80 | 80 | Response length ceiling for short variant |
+| `VARIANT_DETAILED_MIN_TOKENS` | 200 | 200 | Response length floor for detailed variant |
 
 ---
 
@@ -133,7 +162,7 @@ No freeform key naming. All reads and writes go through CacheStore methods.
 ## Implementation rules Claude must follow
 
 - All LLM calls go through `utils/llm.py:llm_call(prompt, max_tokens)` only.
-  Never call the OpenAI client directly inside a module.
+  Never call Ollama or Gemini directly inside a module.
 - All similarity comparisons use `embedder.cosine_similarity()` only.
   No inline dot products or numpy operations outside embedder.py.
 - All config values imported from `config.py`. No hardcoded thresholds,
@@ -146,6 +175,8 @@ No freeform key naming. All reads and writes go through CacheStore methods.
   No per-call connections.
 - Embedding calls are cached in memory within a session in embedder.py.
   Do not re-embed identical strings.
+- LLM prompts must be concise and direct. Minimize input tokens.
+  Truncate context when passing existing responses to supplement prompts.
 
 ---
 
@@ -155,13 +186,24 @@ No freeform key naming. All reads and writes go through CacheStore methods.
 ```python
 {
     "response": str,
-    "cache_hit": bool,
-    "intent_id": str | None,
+    "cache_hit": bool,           # True if any sub-query matched cache
+    "intent_id": str | None,     # Comma-separated IDs for multi-query
     "slots_from_cache": int,
     "slots_from_inference": int,
     "estimated_full_tokens": int,
     "actual_tokens_used": int,
-    "savings_ratio": float
+    "savings_ratio": float,
+    "stitch": {                  # Optional, present on cache hits
+        "skeleton": str,
+        "slot_fills": dict,
+        "slot_sources": dict,
+        "has_slots": bool,
+        "gaps_detected": list | None,
+        "multi_query": bool,     # True if query was split
+        "sub_results": [         # Per-sub-question breakdown
+            {"sub_query": str, "cache_hit": bool, "intent_id": str}
+        ]
+    }
 }
 ```
 
@@ -185,6 +227,33 @@ and fall back to full generation with `cache_hit: False`.
 
 ---
 
+## Gap detection rules
+
+1. Split the query into aspects using commas, "and", and other conjunctions.
+2. Embed each aspect and the cached response skeleton.
+3. If an aspect's similarity to the skeleton is below 0.3, it's a gap.
+4. Gaps become supplement slots appended to the template.
+5. Each supplement slot gets a targeted LLM call: "Already answered: [truncated
+   cached response]. Now answer ONLY this part: [gap]."
+6. If the supplement LLM call fails, serve the cached part only with a
+   `supplement_error` flag in the stitch info.
+
+---
+
+## Multi-query splitting rules
+
+1. Split query on commas, question marks, and conjunctions.
+2. Filter parts: must start with a question word and contain a specific topic
+   (reject generic fragments like "give me examples").
+3. Embed remaining parts and check pairwise cosine similarity.
+4. If parts are semantically distinct (similarity < 0.45), treat as multi-query.
+5. Route each sub-question through `_query_single()` independently.
+6. Combine results: merge responses, aggregate token counts, track per-sub-query
+   cache hit/miss status.
+7. `cache_hit` is True if any sub-query hit the cache.
+
+---
+
 ## Variant routing rules
 
 | Signal | Variant |
@@ -202,11 +271,13 @@ query time for routing. Both must agree or the detailed variant wins.
 
 ## Startup behaviour
 
-On first run, if no intent centroids exist in Redis, `IntentRouter.seed_centroids()`
-is called automatically with at least five example query-response pairs. These
-must cover at least three distinct intent types and include at least one
-example of each variant (short, detailed, list). Seeding blocks startup until
-complete. Do not serve queries until seeding is finished.
+On first run, if no intent centroids exist in Redis, run `seed_cache.py` to
+populate 100 example query-response pairs across 90 intent types. Seeding
+uses local embeddings (no API calls). The server auto-seeds with 5 minimal
+examples if Redis is empty, but `seed_cache.py` provides much better coverage.
+
+Start the server with `./start.sh` — it auto-detects the correct Python,
+checks local mode settings, and launches uvicorn.
 
 ---
 
@@ -221,6 +292,10 @@ complete. Do not serve queries until seeding is finished.
 - total_tokens_saved
 - slots_served_from_cache
 - slots_served_from_inference
+
+`GET /` — serves the dark-themed frontend with query input, response display,
+stitch visualization (shows skeleton, slot fills, gap detection, and
+multi-query routing breakdown), and live stats.
 
 ---
 
@@ -240,6 +315,20 @@ records, decay reduces score for records older than CONFIDENCE_DECAY_DAYS,
 missing keys return None without raising.
 
 Run all tests with `pytest tests/` from the project root.
+Tests mock LLM and embedding calls — no Ollama or API needed to run them.
+
+---
+
+## Local-first setup
+
+1. Install Ollama: `brew install ollama && brew services start ollama`
+2. Pull a model: `ollama pull gemma3:4b`
+3. Start Redis: `redis-server` or `brew services start redis`
+4. Set `.env`: `USE_LOCAL_EMBEDDINGS=true` and `USE_LOCAL_LLM=true`
+5. Seed cache: `python3 seed_cache.py`
+6. Start server: `./start.sh`
+
+No API keys needed. Everything runs on localhost.
 
 ---
 
