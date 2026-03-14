@@ -1,4 +1,4 @@
-"""Seed the TemplateCache with 100 high-quality query-response pairs."""
+"""Seed the TemplateCache with 300+ high-quality query-response pairs."""
 
 import asyncio
 import sys
@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from templatecache.modules.cache_store import CacheStore
+from templatecache.modules.cluster_router import ClusterRouter
 from templatecache.modules.router import IntentRouter
 
 EXAMPLES = [
@@ -238,26 +239,44 @@ EXAMPLES = [
 
 
 async def main():
-    print(f"Seeding {len(EXAMPLES)} query-response pairs into cache...")
+    # Merge base examples with large template set
+    from templates_large import TEMPLATES as LARGE_TEMPLATES
 
-    # Count unique intents
-    intents = set(ex["intent_id"] for ex in EXAMPLES)
-    print(f"  → {len(intents)} unique intent types")
+    all_examples = list(EXAMPLES)
+    existing_ids = {ex["intent_id"] for ex in EXAMPLES}
+    for t in LARGE_TEMPLATES:
+        if t["intent_id"] not in existing_ids:
+            all_examples.append({
+                "intent_id": t["intent_id"],
+                "query": t["query"],
+                "response": t["response"],
+            })
+            existing_ids.add(t["intent_id"])
+
+    intents = set(ex["intent_id"] for ex in all_examples)
+    print(f"Seeding {len(all_examples)} query-response pairs ({len(intents)} unique intents)...")
 
     cache_store = CacheStore()
     router = IntentRouter(cache_store)
 
-    await router.seed_centroids(EXAMPLES)
+    await router.seed_centroids(all_examples)
 
-    # Verify
+    # Verify and build clusters
     centroids = cache_store.get_all_intent_centroids()
     print(f"  → {len(centroids)} centroids written to Redis")
-    for c in sorted(centroids, key=lambda x: x.intent_id):
-        template = cache_store.get_template(c.intent_id)
-        slots = len(template.slots) if template else 0
-        print(f"    {c.intent_id}: {c.query_count} examples, variant={c.variant}, {slots} slots")
 
-    print(f"\n✓ Cache seeded successfully with {len(EXAMPLES)} examples!")
+    # Build cluster router
+    cluster_router = ClusterRouter()
+    cluster_router.build(centroids)
+
+    if cluster_router.is_built:
+        print(f"  → {cluster_router.cluster_count} clusters built")
+        for info in cluster_router.get_cluster_info():
+            print(f"    Cluster '{info['label']}': {info['size']} intents")
+    else:
+        print("  → Clustering skipped (below threshold)")
+
+    print(f"\n✓ Cache seeded with {len(all_examples)} examples across {len(intents)} intents!")
 
 
 if __name__ == "__main__":

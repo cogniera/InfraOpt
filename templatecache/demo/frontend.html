@@ -169,7 +169,8 @@ function buildStitchViz(stitch, intentId) {
     return html;
   }
 
-  html += `<div class="stitch-section"><div class="stitch-label">🎯 Matched Intent</div><code style="color:#60a5fa">${intentId}</code></div>`;
+  const clusterInfo = stitch.cluster ? ` <span style="color:#9ca3af">in cluster</span> <code style="color:#a78bfa">${escHtml(stitch.cluster)}</code>` : '';
+  html += `<div class="stitch-section"><div class="stitch-label">🎯 Matched Intent</div><code style="color:#60a5fa">${intentId}</code>${clusterInfo}</div>`;
 
   if (!stitch.has_slots && !hasGaps) {
     html += `<div class="stitch-section"><div class="stitch-label">📋 Template (no slots)</div>`;

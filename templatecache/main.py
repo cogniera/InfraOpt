@@ -5,6 +5,7 @@ import logging
 from typing import Dict, List
 
 from templatecache.modules.cache_store import CacheStore
+from templatecache.modules.cluster_router import ClusterRouter
 from templatecache.modules.router import IntentRouter
 from templatecache.modules.slot_engine import SlotEngine
 from templatecache.utils.extractor import (
@@ -81,17 +82,19 @@ class TemplateCache:
         """Initialize TemplateCache with all sub-modules."""
         self._cache_store = CacheStore()
         self._router = IntentRouter(self._cache_store)
+        self._cluster_router = ClusterRouter()
         self._slot_engine = SlotEngine(self._cache_store)
         self._seeded = False
 
     async def _ensure_seeded(self) -> None:
         """Seed centroids on first startup if none exist in Redis.
 
-        Blocks until seeding is complete. Do not serve queries until
-        seeding is finished.
+        Builds cluster router if enough centroids exist. Blocks until
+        seeding is complete. Do not serve queries until seeding is finished.
 
         Side effects:
             Writes seed data to Redis if no centroids exist.
+            Builds cluster index from all centroids.
         """
         if self._seeded:
             return
@@ -99,6 +102,16 @@ class TemplateCache:
         if not centroids:
             logger.info("No centroids found. Seeding defaults...")
             await self._router.seed_centroids(_DEFAULT_SEED_EXAMPLES)
+            centroids = self._cache_store.get_all_intent_centroids()
+
+        # Build cluster router from all centroids
+        if centroids and not self._cluster_router.is_built:
+            self._cluster_router.build(centroids)
+            if self._cluster_router.is_built:
+                logger.info(
+                    "Cluster router active: %d clusters",
+                    self._cluster_router.cluster_count,
+                )
         self._seeded = True
 
 
@@ -114,8 +127,12 @@ class TemplateCache:
         Side effects:
             May make LLM and embedding API calls. May write to Redis.
         """
-        # Route query
-        intent_id, variant = self._router.route(prompt)
+        # Route query — use cluster router if built, else flat scan
+        cluster_label = None
+        if self._cluster_router.is_built:
+            intent_id, variant, cluster_label = self._cluster_router.route(prompt)
+        else:
+            intent_id, variant = self._router.route(prompt)
 
         if intent_id is not None:
             # Cache hit path
@@ -155,6 +172,9 @@ class TemplateCache:
                     estimated_full = len(response.split()) * 2
                     actual_used = from_inference * 40
                     savings = max(0.0, 1.0 - (actual_used / max(estimated_full, 1)))
+
+                    if cluster_label:
+                        stitch_info["cluster"] = cluster_label
 
                     return {
                         "response": response,
