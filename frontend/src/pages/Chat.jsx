@@ -39,6 +39,175 @@ const SUGGESTIONS = [
   'Compare Mistral 7B and Llama 3 8B for coding tasks',
 ];
 
+// ── Stitch visualization panel ────────────────────────────────────────────────
+function SlotTable({ fills, sources }) {
+  const names = Object.keys(fills || {});
+  if (!names.length) return null;
+  return (
+    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, marginTop: 6 }}>
+      <thead>
+        <tr>
+          {['Slot', 'Value', 'Source'].map(h => (
+            <th key={h} style={{ textAlign: 'left', color: '#475569', fontWeight: 500, padding: '3px 8px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>{h}</th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {names.map(name => {
+          const isSupp = name.startsWith('supplement_');
+          const src = sources?.[name];
+          return (
+            <tr key={name}>
+              <td style={{ padding: '3px 8px', fontFamily: 'JetBrains Mono, monospace', color: isSupp ? '#fbbf24' : '#60a5fa', fontSize: 11 }}>[{name}]</td>
+              <td style={{ padding: '3px 8px', color: '#e2e8f0', maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fills[name]}</td>
+              <td style={{ padding: '3px 8px', fontSize: 11, color: src === 'cache' ? '#4ade80' : '#fbbf24' }}>
+                {src === 'cache' ? '✓ CACHE' : '⚡ LLM'}
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
+function StitchPanel({ stitch, intentId }) {
+  const [open, setOpen] = useState(false);
+  if (!stitch) return null;
+
+  const sectionStyle = { marginBottom: 12 };
+  const labelStyle = { fontSize: 10, fontWeight: 600, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 4 };
+  const codeBox = { background: 'rgba(0,0,0,0.35)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 6, padding: '8px 12px', fontFamily: 'JetBrains Mono, monospace', fontSize: 11, lineHeight: 1.6, whiteSpace: 'pre-wrap', overflowX: 'auto' };
+
+  const slotNames = Object.keys(stitch.slot_fills || {});
+  const regularSlots = slotNames.filter(n => !n.startsWith('supplement_'));
+  const suppSlots = slotNames.filter(n => n.startsWith('supplement_'));
+  const gaps = stitch.gaps_detected || [];
+
+  // Highlight [slot_name] markers in skeleton text
+  function highlightSkeleton(text, filled = false) {
+    if (!text) return null;
+    const parts = text.split(/(\[[^\]]+\])/g);
+    return parts.map((part, i) => {
+      const match = part.match(/^\[([^\]]+)\]$/);
+      if (!match) return <span key={i} style={{ color: '#9ca3af' }}>{part}</span>;
+      const name = match[1];
+      const isSupp = name.startsWith('supplement_');
+      const fillVal = stitch.slot_fills?.[name];
+      if (filled && fillVal) {
+        return <span key={i} style={{ background: isSupp ? 'rgba(146,64,14,0.5)' : 'rgba(20,83,45,0.6)', color: isSupp ? '#fbbf24' : '#4ade80', padding: '1px 5px', borderRadius: 3 }}>{fillVal}</span>;
+      }
+      return <span key={i} style={{ background: isSupp ? 'rgba(146,64,14,0.3)' : 'rgba(30,58,95,0.6)', color: isSupp ? '#fbbf24' : '#60a5fa', padding: '1px 5px', borderRadius: 3, fontWeight: 600 }}>[{name}]</span>;
+    });
+  }
+
+  return (
+    <div style={{ marginTop: 10, borderTop: '1px solid rgba(255,255,255,0.07)', paddingTop: 8 }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#60a5fa', fontSize: 12, padding: 0, textDecoration: 'underline' }}
+      >
+        {open ? '▼ Hide stitching' : '▶ Show stitching'}
+      </button>
+
+      {open && (
+        <div style={{ marginTop: 10, fontSize: 13 }}>
+
+          {/* Multi-query breakdown */}
+          {stitch.multi_query && stitch.sub_results?.length > 0 && (
+            <div style={sectionStyle}>
+              <div style={labelStyle}>🔀 Multi-Query Routing</div>
+              {stitch.sub_results.map((sr, i) => (
+                <div key={i} style={{ padding: '3px 0', fontSize: 12 }}>
+                  {sr.cache_hit ? '🟢' : '🔴'} <span style={{ color: '#e2e8f0' }}>{sr.sub_query}</span>
+                  {' — '}
+                  <span style={{ color: sr.cache_hit ? '#4ade80' : '#fbbf24', fontWeight: 600 }}>
+                    {sr.cache_hit ? 'CACHE HIT' : 'LLM GENERATED'}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Intent ID */}
+          {intentId && (
+            <div style={sectionStyle}>
+              <div style={labelStyle}>🎯 Matched Intent</div>
+              <code style={{ color: '#60a5fa', fontSize: 11 }}>{intentId}</code>
+            </div>
+          )}
+
+          {/* No-slot case */}
+          {!stitch.has_slots && gaps.length === 0 && (
+            <div style={sectionStyle}>
+              <div style={labelStyle}>📋 Template (no slots)</div>
+              <div style={codeBox}>{highlightSkeleton(stitch.skeleton)}</div>
+              <div style={{ marginTop: 6, fontSize: 11, color: '#94a3b8', background: 'rgba(30,41,59,0.5)', padding: '3px 10px', borderRadius: 4, display: 'inline-block' }}>
+                ✓ Entire response served from cache — no LLM calls needed
+              </div>
+            </div>
+          )}
+
+          {/* Gaps */}
+          {gaps.length > 0 && (
+            <div style={sectionStyle}>
+              <div style={labelStyle}>🔍 Gaps Detected</div>
+              <div style={{ fontSize: 12, color: '#fbbf24', marginBottom: 4 }}>Query aspects not covered by cache:</div>
+              <ul style={{ margin: '0 0 0 16px', fontSize: 12, color: '#fbbf24' }}>
+                {gaps.map((g, i) => <li key={i}>"{g}"</li>)}
+              </ul>
+            </div>
+          )}
+
+          {/* Skeleton */}
+          {stitch.has_slots && (
+            <div style={sectionStyle}>
+              <div style={labelStyle}>📋 Cached Template</div>
+              <div style={codeBox}>{highlightSkeleton(stitch.skeleton, false)}</div>
+            </div>
+          )}
+
+          {/* Supplement slots */}
+          {suppSlots.length > 0 && (
+            <div style={sectionStyle}>
+              <div style={labelStyle}>➕ Supplement Slots (LLM-generated for gaps)</div>
+              <div style={codeBox}>
+                {suppSlots.map(n => (
+                  <span key={n} style={{ background: 'rgba(146,64,14,0.4)', color: '#fbbf24', padding: '1px 5px', borderRadius: 3, marginRight: 6 }}>[{n}]</span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Slot fills table */}
+          {slotNames.length > 0 && (
+            <div style={sectionStyle}>
+              <div style={labelStyle}>🔧 Slot Fills</div>
+              <SlotTable fills={stitch.slot_fills} sources={stitch.slot_sources} />
+            </div>
+          )}
+
+          {/* Stitch arrow */}
+          {slotNames.length > 0 && (
+            <div style={{ textAlign: 'center', color: '#334155', fontSize: 16, padding: '4px 0' }}>↓ stitch ↓</div>
+          )}
+
+          {/* Stitched result */}
+          {slotNames.length > 0 && (
+            <div style={sectionStyle}>
+              <div style={labelStyle}>✅ Stitched Result</div>
+              <div style={{ ...codeBox, border: '1px solid rgba(20,83,45,0.5)', background: 'rgba(4,26,10,0.6)' }}>
+                {highlightSkeleton(stitch.skeleton, true)}
+              </div>
+            </div>
+          )}
+
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Copy button for messages ──────────────────────────────────────────────────
 function CopyBtn({ text }) {
   const [copied, setCopied] = useState(false);
@@ -110,15 +279,36 @@ function Message({ msg }) {
           {msg.content}
         </div>
 
+        {/* Stitch panel — only on assistant messages with stitch data */}
+        {!isUser && msg.stitch && (
+          <StitchPanel stitch={msg.stitch} intentId={msg.intentId} />
+        )}
+
         {/* Meta row */}
         <div style={{
-          display: 'flex', alignItems: 'center', gap: 8, marginTop: 4,
+          display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, flexWrap: 'wrap',
           justifyContent: isUser ? 'flex-end' : 'flex-start',
         }}>
           <span style={{ fontSize: 11, color: '#334155' }}>{timeAgo(msg.ts)}</span>
-          {!isUser && msg.model && (
-            <span style={{ fontSize: 11, color: '#334155', fontFamily: 'JetBrains Mono, monospace' }}>
-              · {msg.model}
+          {!isUser && msg.cacheHit != null && (
+            <span style={{
+              fontSize: 10, fontFamily: 'JetBrains Mono, monospace', fontWeight: 600,
+              padding: '1px 6px', borderRadius: 4,
+              background: msg.cacheHit ? 'rgba(16,185,129,0.12)' : 'rgba(239,68,68,0.10)',
+              color: msg.cacheHit ? '#10b981' : '#ef4444',
+              border: `1px solid ${msg.cacheHit ? 'rgba(16,185,129,0.25)' : 'rgba(239,68,68,0.2)'}`,
+            }}>
+              {msg.cacheHit ? '✓ cache hit' : '✗ cache miss'}
+            </span>
+          )}
+          {!isUser && msg.savingsRatio != null && (
+            <span style={{ fontSize: 10, color: '#6366f1', fontFamily: 'JetBrains Mono, monospace' }}>
+              {Math.round(msg.savingsRatio * 100)}% saved
+            </span>
+          )}
+          {!isUser && msg.slotsFromCache > 0 && (
+            <span style={{ fontSize: 10, color: '#475569', fontFamily: 'JetBrains Mono, monospace' }}>
+              {msg.slotsFromCache}↑cache {msg.slotsFromInference}↑llm
             </span>
           )}
           {!isUser && <CopyBtn text={msg.content} />}
@@ -252,7 +442,7 @@ function ChatSidebar({ chats, activeChatId, onSelect, onNew, onDelete }) {
         borderTop: '1px solid rgba(255,255,255,0.04)',
         fontSize: 11, color: '#1e293b', fontFamily: 'JetBrains Mono, monospace',
       }}>
-        Node.js · FastAPI · Vite
+        TemplateCache · Redis · Ollama
       </div>
     </aside>
   );
@@ -327,8 +517,9 @@ export default function Chat() {
   const [model, setModel]             = useState('llama-3-8b');
   const [showPipeline, setShowPipeline] = useState(false);
   const [pipelineCacheHit, setPipelineCacheHit] = useState(false);
-  const pendingMsg   = useRef(null);   // buffer API response during animation
+  const pendingMsg    = useRef(null);   // buffer API response during animation
   const pendingChatId = useRef(null);
+  const animDone      = useRef(false);  // true once pipeline animation completes
   const messagesEndRef = useRef(null);
   const textareaRef    = useRef(null);
 
@@ -361,21 +552,32 @@ export default function Chat() {
     setActiveChatId(prev => prev === id ? null : prev);
   }, []);
 
-  // Called when the pipeline animation finishes — apply buffered response
-  const onPipelineComplete = useCallback(() => {
+  // Apply buffered response to chat — safe to call from either animation or API resolver
+  const applyPendingMsg = useCallback(() => {
+    if (!pendingMsg.current || !pendingChatId.current) return;
+    const msg    = pendingMsg.current;
+    const chatId = pendingChatId.current;
+    pendingMsg.current    = null;
+    pendingChatId.current = null;
+    animDone.current      = false;
     setShowPipeline(false);
     setLoading(false);
-    if (pendingMsg.current && pendingChatId.current) {
-      const { msg, chatId } = { msg: pendingMsg.current, chatId: pendingChatId.current };
-      pendingMsg.current    = null;
-      pendingChatId.current = null;
-      setChats(prev => prev.map(c =>
-        c.id === chatId
-          ? { ...c, messages: [...c.messages, msg], updatedAt: Date.now() }
-          : c
-      ));
-    }
+    setChats(prev => prev.map(c =>
+      c.id === chatId
+        ? { ...c, messages: [...c.messages, msg], updatedAt: Date.now() }
+        : c
+    ));
   }, []);
+
+  // Called when the pipeline animation finishes
+  const onPipelineComplete = useCallback(() => {
+    animDone.current = true;
+    if (pendingMsg.current) {
+      // API already resolved — apply immediately
+      applyPendingMsg();
+    }
+    // else: API still in flight — applyPendingMsg will be called when it resolves
+  }, [applyPendingMsg]);
 
   const sendMessage = useCallback(async (text) => {
     if (!text.trim() || loading) return;
@@ -404,39 +606,47 @@ export default function Chat() {
       };
     }));
 
-    // Start animation (random cache-hit demo 30% of the time)
-    const cacheHit = Math.random() < 0.3;
-    setPipelineCacheHit(cacheHit);
+    // Start animation immediately
+    animDone.current = false;
+    setPipelineCacheHit(false);
     setShowPipeline(true);
     setLoading(true);
     pendingChatId.current = chatId;
 
-    // Fire API call in parallel — buffer result for when animation ends
+    // Fire API call — buffer result; whichever finishes last (API or animation) applies it
     try {
-      const res = await fetch('/api/chat', {
+      const res = await fetch('/query', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model,
-          messages: [...existingMessages, userMsg].map(m => ({ role: m.role, content: m.content })),
-        }),
+        body: JSON.stringify({ prompt: text }),
       });
       const data = await res.json();
+      setPipelineCacheHit(!!data.cache_hit);
       pendingMsg.current = {
         id: uid(), role: 'assistant',
-        content: data.content ?? data.error ?? 'No response.',
-        model: data.model,
+        content: data.response ?? data.error ?? 'No response.',
+        cacheHit: !!data.cache_hit,
+        savingsRatio: data.savings_ratio ?? null,
+        slotsFromCache: data.slots_from_cache ?? 0,
+        slotsFromInference: data.slots_from_inference ?? 0,
+        intentId: data.intent_id ?? null,
+        stitch: data.stitch ?? null,
         ts: Date.now(),
       };
     } catch (err) {
       pendingMsg.current = {
         id: uid(), role: 'assistant',
-        content: `Error: ${err.message}`,
+        content: `Error connecting to backend: ${err.message}`,
         ts: Date.now(),
       };
     }
-    // Response is now buffered — onPipelineComplete will apply it
-  }, [activeChatId, chats, loading, model]);
+
+    // If animation already finished by the time API resolved, apply now
+    if (animDone.current) {
+      applyPendingMsg();
+    }
+    // Otherwise onPipelineComplete will call applyPendingMsg when animation ends
+  }, [activeChatId, chats, loading, applyPendingMsg]);
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
