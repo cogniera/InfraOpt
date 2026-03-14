@@ -278,6 +278,37 @@ class ClusterRouter:
 
         return None, None, None
 
+    def update_centroid(self, centroid: IntentCentroid) -> None:
+        """Update or add a centroid in the in-memory map.
+
+        If the centroid already exists, updates it in place. If it's new,
+        adds it to the map and assigns it to the nearest cluster.
+
+        Args:
+            centroid: The IntentCentroid to update or add.
+
+        Side effects:
+            Updates self._centroid_map. May add to a cluster's centroid_ids.
+        """
+        is_new = centroid.intent_id not in self._centroid_map
+        self._centroid_map[centroid.intent_id] = centroid
+
+        # For new centroids, assign to the nearest cluster
+        if is_new and self._is_built and self._clusters:
+            best_sim = -1.0
+            best_cluster = self._clusters[0]
+            for cluster in self._clusters:
+                sim = cosine_similarity(centroid.centroid_embedding, cluster.center)
+                if sim > best_sim:
+                    best_sim = sim
+                    best_cluster = cluster
+            best_cluster.centroid_ids.append(centroid.intent_id)
+            logger.info(
+                "Added new centroid '%s' to cluster '%s' (%d members)",
+                centroid.intent_id, best_cluster.label,
+                len(best_cluster.centroid_ids),
+            )
+
     def get_cluster_info(self) -> List[Dict]:
         """Return summary info about all clusters.
 

@@ -106,13 +106,65 @@ class TemplateCache:
 
         # Build cluster router from all centroids
         if centroids and not self._cluster_router.is_built:
-            self._cluster_router.build(centroids)
-            if self._cluster_router.is_built:
-                logger.info(
-                    "Cluster router active: %d clusters",
-                    self._cluster_router.cluster_count,
-                )
+            try:
+                self._cluster_router.build(centroids)
+                if self._cluster_router.is_built:
+                    logger.warning(
+                        "Cluster router active: %d clusters from %d centroids",
+                        self._cluster_router.cluster_count,
+                        len(centroids),
+                    )
+                else:
+                    logger.warning(
+                        "Cluster router not built (%d centroids below threshold)",
+                        len(centroids),
+                    )
+            except Exception as e:
+                logger.exception("Failed to build cluster router: %s", e)
         self._seeded = True
+
+
+    def _update_centroid_average(self, intent_id: str, query: str) -> None:
+        """Update a centroid embedding as a rolling average of matched queries.
+
+        Each time a query matches a cached intent, the centroid embedding
+        moves slightly toward the new query's embedding. Over time this
+        broadens the centroid to cover more phrasings of the same question.
+
+        Args:
+            intent_id: The matched intent ID.
+            query: The user query that matched.
+
+        Side effects:
+            Updates centroid in Redis and in-memory cluster router.
+        """
+        from templatecache.utils.embedder import embed
+
+        centroid = self._cache_store.get_intent_centroid(intent_id)
+        if centroid is None:
+            return
+
+        query_embedding = embed(query)
+        n = centroid.query_count
+
+        # Rolling average: new_centroid = (old * n + new) / (n + 1)
+        updated_embedding = [
+            (old_val * n + new_val) / (n + 1)
+            for old_val, new_val in zip(centroid.centroid_embedding, query_embedding)
+        ]
+
+        centroid.centroid_embedding = updated_embedding
+        centroid.query_count = n + 1
+
+        # Write back to Redis (non-blocking)
+        asyncio.create_task(
+            self._cache_store.write_back(centroid=centroid)
+        )
+
+        # Keep cluster router in sync
+        if self._cluster_router.is_built:
+            self._cluster_router.update_centroid(centroid)
+
 
 
     async def _query_single(self, prompt: str) -> Dict:
@@ -139,6 +191,11 @@ class TemplateCache:
             template = self._cache_store.get_template(intent_id)
             if template is not None:
                 template.hit_count += 1
+
+                # Centroid averaging — update centroid embedding as rolling
+                # average so it covers more phrasings over time
+                self._update_centroid_average(intent_id, prompt)
+
                 asyncio.create_task(
                     self._cache_store.write_back(template=template)
                 )
@@ -226,6 +283,12 @@ class TemplateCache:
                 template=new_template, centroid=new_centroid
             )
         )
+
+        # Add new centroid to cluster router's in-memory map so
+        # subsequent queries can match it without a server restart.
+        # IntentRouter reads from Redis each time so no update needed.
+        if self._cluster_router.is_built:
+            self._cluster_router.update_centroid(new_centroid)
 
         estimated_full = len(response_text.split()) * 2
         return {
