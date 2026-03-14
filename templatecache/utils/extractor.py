@@ -114,7 +114,9 @@ def extract_template(response: str) -> Tuple[str, List[str], Dict[str, List[str]
 
 # Splitter patterns for breaking queries into distinct aspects
 _ASPECT_SPLITTERS = re.compile(
-    r",\s*(?:and\s+)?|(?:\band\b\s+)|(?:\balso\b\s+)|(?:\bplus\b\s+)|(?:\bas well as\b\s+)",
+    r",\s*(?:and\s+)?|(?:\band\b\s+)|(?:\balso\b\s+)|(?:\bplus\b\s+)"
+    r"|(?:\bas well as\b\s+)|(?:\bbut\b\s+)|(?:\bhowever\b\s+)"
+    r"|(?:\bwhat about\b\s+)|(?:\bhow about\b\s+)|(?:\bthough\b\s+)",
     re.IGNORECASE,
 )
 
