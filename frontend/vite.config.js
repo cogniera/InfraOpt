@@ -14,6 +14,14 @@ export default defineConfig({
         target: 'http://localhost:3000',
         changeOrigin: true,
       },
+      '/query': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
+      '/stats': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
     },
   },
 });

@@ -1,6 +1,16 @@
 name: inferopt
 
 services:
+
+  # ── Redis — intent + slot cache storage ───────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: inferopt-redis
+    restart: unless-stopped
+    networks:
+      - inferopt-net
+
+  # ── TemplateCache API (FastAPI) ────────────────────────────────────────────────
   api:
     build:
       context: ./api
@@ -9,32 +19,35 @@ services:
     restart: unless-stopped
     ports:
       - "8000:8000"
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 5s
+    env_file:
+      - ./api/.env
+    environment:
+      # Docker overrides — Redis must point to the container, not localhost
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      - redis
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - inferopt-net
 
+  # ── Node.js backend — handles /api/* stub routes ──────────────────────────────
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
     container_name: inferopt-backend
     restart: unless-stopped
-    ports:
-      - "3000:3000"
     environment:
       - PORT=3000
       - FASTAPI_URL=http://api:8000
     depends_on:
-      api:
-        condition: service_healthy
+      - api
     networks:
       - inferopt-net
 
+  # ── Nginx — serves React frontend, proxies /query and /stats to api ───────────
   frontend:
     build:
       context: ./frontend
@@ -44,6 +57,7 @@ services:
     ports:
       - "80:80"
     depends_on:
+      - api
       - backend
     networks:
       - inferopt-net
