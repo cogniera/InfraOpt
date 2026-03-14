@@ -149,7 +149,27 @@ async function send() {
 function buildStitchViz(stitch, intentId) {
   const gaps = stitch.gaps_detected || [];
   const hasGaps = gaps.length > 0;
-  let html = `<div class="stitch-section"><div class="stitch-label">🎯 Matched Intent</div><code style="color:#60a5fa">${intentId}</code></div>`;
+  let html = '';
+
+  // Multi-query: show per-sub-question breakdown
+  if (stitch.multi_query && stitch.sub_results) {
+    html += `<div class="stitch-section"><div class="stitch-label">🔀 Multi-Query Routing</div>`;
+    html += `<div style="font-size:12px;color:#9ca3af;margin-bottom:8px">Query was split into ${stitch.sub_results.length} sub-questions, each routed independently:</div>`;
+    for (const sr of stitch.sub_results) {
+      const isHit = sr.cache_hit;
+      const icon = isHit ? '🟢' : '🔴';
+      const label = isHit ? 'CACHE HIT' : 'LLM GENERATED (now cached)';
+      const color = isHit ? '#4ade80' : '#fbbf24';
+      html += `<div style="padding:4px 0;font-size:13px">${icon} <span style="color:#e0e0e0">${escHtml(sr.sub_query)}</span> — <span style="color:${color};font-weight:600">${label}</span></div>`;
+    }
+    const hitCount = stitch.sub_results.filter(r => r.cache_hit).length;
+    const total = stitch.sub_results.length;
+    html += `<div style="margin-top:8px;font-size:11px;color:#888">${hitCount}/${total} served from cache · ${total - hitCount}/${total} required LLM</div>`;
+    html += `</div>`;
+    return html;
+  }
+
+  html += `<div class="stitch-section"><div class="stitch-label">🎯 Matched Intent</div><code style="color:#60a5fa">${intentId}</code></div>`;
 
   if (!stitch.has_slots && !hasGaps) {
     html += `<div class="stitch-section"><div class="stitch-label">📋 Template (no slots)</div>`;
