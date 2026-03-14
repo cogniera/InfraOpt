@@ -202,14 +202,7 @@ def split_multi_query(query: str) -> List[str]:
 
     return [query.strip()]
 
-# Minimum similarity for an aspect to be considered "covered" by the response
-_GAP_COVERAGE_THRESHOLD = 0.45
-
-# Minimum similarity between entire query and cached response for the
-# response to be considered relevant. Below this, the query is asking
-# about a different facet of the same topic (e.g. "weapons in WW2" vs
-# a cached response about "causes of WW2").
-_RESPONSE_RELEVANCE_THRESHOLD = 0.35
+from templatecache.config import GAP_COVERAGE_THRESHOLD, RESPONSE_RELEVANCE_THRESHOLD
 
 
 def detect_query_gaps(query: str, cached_response: str) -> List[str]:
@@ -238,7 +231,7 @@ def detect_query_gaps(query: str, cached_response: str) -> List[str]:
     if len(aspects) <= 1:
         query_embedding = embed(query)
         relevance = cosine_similarity(query_embedding, response_embedding)
-        if relevance < _RESPONSE_RELEVANCE_THRESHOLD:
+        if relevance < RESPONSE_RELEVANCE_THRESHOLD:
             return [query]
         return []
 
@@ -247,7 +240,7 @@ def detect_query_gaps(query: str, cached_response: str) -> List[str]:
     for aspect in aspects:
         aspect_embedding = embed(aspect)
         similarity = cosine_similarity(aspect_embedding, response_embedding)
-        if similarity < _GAP_COVERAGE_THRESHOLD:
+        if similarity < GAP_COVERAGE_THRESHOLD:
             gaps.append(aspect)
 
     return gaps

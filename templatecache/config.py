@@ -18,6 +18,10 @@ INTENT_SIMILARITY_THRESHOLD: float = 0.55 if USE_LOCAL_EMBEDDINGS else 0.90
 SLOT_CONFIDENCE_THRESHOLD: float = 0.50 if USE_LOCAL_EMBEDDINGS else 0.85
 UNCERTAIN_SLOT_FALLBACK_RATIO: float = 0.5
 
+# Gap detection — how well must the cached response match the query?
+GAP_COVERAGE_THRESHOLD: float = 0.45  # per-aspect coverage for multi-aspect queries
+RESPONSE_RELEVANCE_THRESHOLD: float = 0.35  # whole-query relevance
+
 # Confidence decay
 CONFIDENCE_DECAY_FACTOR: float = 0.95
 CONFIDENCE_DECAY_DAYS: int = 30

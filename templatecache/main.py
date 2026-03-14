@@ -166,6 +166,45 @@ class TemplateCache:
             self._cluster_router.update_centroid(centroid)
 
 
+    def _check_sub_result_relevance(self, sub_query: str, result: Dict) -> Dict:
+        """Verify a cache-hit sub-result actually answers the sub-query.
+
+        Multi-query sub-questions are short and specific, making them more
+        prone to centroid misroutes (e.g. "plant" matching "planet"). This
+        compares the sub-query embedding to the response embedding. If
+        they're too dissimilar, marks the result as a cache miss so the
+        response is regenerated.
+
+        Args:
+            sub_query: The sub-question text.
+            result: The result dict from _query_single.
+
+        Returns:
+            The original result if relevant, or a modified result with
+            cache_hit=False if the response doesn't answer the question.
+        """
+        from templatecache.config import RESPONSE_RELEVANCE_THRESHOLD
+        from templatecache.utils.embedder import embed, cosine_similarity
+
+        response_text = result.get("response", "")
+        if not response_text:
+            return result
+
+        query_emb = embed(sub_query)
+        resp_emb = embed(response_text[:500])
+        relevance = cosine_similarity(query_emb, resp_emb)
+
+        if relevance < RESPONSE_RELEVANCE_THRESHOLD:
+            logger.warning(
+                "Sub-result relevance too low (%.3f) for '%s', will regenerate",
+                relevance, sub_query[:60],
+            )
+            # Mark as miss so the combined result doesn't count it as a hit
+            result["cache_hit"] = False
+            result["savings_ratio"] = 0.0
+        return result
+
+
 
     async def _query_single(self, prompt: str) -> Dict:
         """Process a single-topic query through the pipeline.
@@ -337,6 +376,14 @@ class TemplateCache:
             sub_results = []
             for sq in sub_queries:
                 result = await self._query_single(sq)
+
+                # Relevance check: if the sub-query got a cache hit but the
+                # response doesn't actually answer it, regenerate via LLM.
+                # Sub-queries are short/specific, so misroutes are more
+                # likely than full queries.
+                if result["cache_hit"]:
+                    result = self._check_sub_result_relevance(sq, result)
+
                 sub_results.append(result)
 
             # Combine results
