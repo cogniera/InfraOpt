@@ -26,6 +26,18 @@ RESPONSE_RELEVANCE_THRESHOLD: float = 0.35  # whole-query relevance
 CONFIDENCE_DECAY_FACTOR: float = 0.95
 CONFIDENCE_DECAY_DAYS: int = 30
 
+# Cross-query slot transfer
+SLOT_TRANSFER_ENABLED: bool = True
+SLOT_TRANSFER_PENALTY: float = 0.15  # subtracted from similarity when transferring across templates
+
+# Confidence-weighted response blending
+SLOT_BLEND_ENABLED: bool = True
+SLOT_BLEND_THRESHOLD: float = 0.65 if USE_LOCAL_EMBEDDINGS else 0.92  # above this: serve cached directly
+
+# Gap pattern learning
+GAP_LEARNING_ENABLED: bool = True
+GAP_PROMOTION_THRESHOLD: int = 3  # gap type occurrences before promoting to slot
+
 # Model names
 EMBEDDING_MODEL: str = "gemini-embedding-001"
 LLM_MODEL: str = "gemini-2.0-flash"

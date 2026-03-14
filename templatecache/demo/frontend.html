@@ -220,17 +220,68 @@ function buildStitchViz(stitch, intentId) {
   }
 
   // Slot fills table
+  // Gap type labels
+  const gaps = stitch.gaps_detected || [];
+  if (gaps.length > 0) {
+    html += `<div class="stitch-section"><div class="stitch-label">🔍 Gaps Detected</div><ul style="margin:4px 0;padding-left:18px">`;
+    for (const gap of gaps) {
+      // Try to classify gap type client-side (basic heuristic)
+      let gapType = 'elaboration';
+      const gl = gap.toLowerCase();
+      if (/\b(when|date|year|recent|latest|update|current)\b/.test(gl)) gapType = 'temporal';
+      else if (/\b(compar|vs|differ|better|worse|contrast)\b/.test(gl)) gapType = 'comparison';
+      else if (/\b(how (much|many|long|far)|cost|price|size|percent)\b/.test(gl)) gapType = 'quantitative';
+      else if (/\b(why|caus|reason|because|effect|impact)\b/.test(gl)) gapType = 'causal';
+      else if (/\b(how to|steps?|process|method|procedure)\b/.test(gl)) gapType = 'procedural';
+      else if (/\b(example|sample|demonstrate|show me)\b/.test(gl)) gapType = 'example';
+      html += `<li><span style="background:#374151;color:#9ca3af;padding:1px 6px;border-radius:3px;font-size:0.75em;margin-right:4px">${gapType}</span>${escHtml(gap)}</li>`;
+    }
+    html += `</ul></div>`;
+  }
+
+  // Slot fills with source badges
   if (slotNames.length > 0) {
     html += `<div class="stitch-section"><div class="stitch-label">🔧 Slot Fills</div><table class="slot-table"><tr><th>Slot</th><th>Value</th><th>Source</th></tr>`;
     for (const name of slotNames) {
-      const src = stitch.slot_sources[name];
-      const srcClass = src === 'cache' ? 'source-cache' : 'source-inference';
-      const srcLabel = src === 'cache' ? '✓ CACHE' : '⚡ LLM';
-      const isSupp = name.startsWith('supplement_');
+      const src = stitch.slot_sources[name] || 'inference';
+      const srcConfig = {
+        cache: { cls: 'source-cache', label: '✓ CACHE', color: '#10b981' },
+        transfer: { cls: 'source-cache', label: '🔄 TRANSFER', color: '#3b82f6' },
+        blend: { cls: 'source-cache', label: '🎲 BLEND', color: '#f59e0b' },
+        inference: { cls: 'source-inference', label: '⚡ LLM', color: '#ef4444' },
+      };
+      const cfg = srcConfig[src] || srcConfig.inference;
+      const isSupp = name.startsWith('supplement_') || name.includes('_supplement_');
       const nameStyle = isSupp ? 'color:#fbbf24' : '';
-      html += `<tr><td class="slot-name" style="${nameStyle}">[${name}]</td><td class="slot-value">${escHtml(stitch.slot_fills[name])}</td><td class="${srcClass}">${srcLabel}</td></tr>`;
+      let valueHtml = escHtml(stitch.slot_fills[name]);
+
+      // Blend candidates: show both values and which was selected
+      const blendCandidates = stitch.blend_candidates || {};
+      if (src === 'blend' && blendCandidates[name]) {
+        const bc = blendCandidates[name];
+        const selIcon = bc.selected === 'cached' ? '✓' : '⚡';
+        valueHtml = `<div style="font-size:0.85em">` +
+          `<div>Cached: <code>${escHtml(bc.cached_value)}</code> ${bc.selected === 'cached' ? '← selected' : ''}</div>` +
+          `<div>Fresh: <code>${escHtml(bc.fresh_value)}</code> ${bc.selected === 'fresh' ? '← selected' : ''}</div>` +
+          `<div style="color:#9ca3af">confidence: ${(bc.confidence*100).toFixed(0)}%</div></div>`;
+      }
+
+      html += `<tr><td class="slot-name" style="${nameStyle}">[${name}]</td><td class="slot-value">${valueHtml}</td><td style="color:${cfg.color}">${cfg.label}</td></tr>`;
     }
     html += `</table></div>`;
+  }
+
+  // Promotion event banner
+  const promoted = stitch.slots_promoted || [];
+  if (promoted.length > 0) {
+    html += `<div class="stitch-section" style="background:#064e3b;border:1px solid #10b981;border-radius:6px;padding:8px 12px;margin:8px 0">` +
+      `<div style="color:#10b981;font-weight:600">🎉 Slot Promotion Event</div>` +
+      `<div style="color:#a7f3d0;font-size:0.9em">The following gap types were promoted to permanent template slots:</div>` +
+      `<ul style="margin:4px 0;padding-left:18px;color:#d1fae5">`;
+    for (const s of promoted) {
+      html += `<li><code>${escHtml(s)}</code></li>`;
+    }
+    html += `</ul></div>`;
   }
 
   html += `<div class="stitch-arrow">↓ stitch ↓</div>`;

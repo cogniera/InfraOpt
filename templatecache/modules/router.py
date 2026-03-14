@@ -109,7 +109,7 @@ class IntentRouter:
             # Use first example to build template
             first_response = group[0]["response"]
             variant = determine_variant(group[0]["query"])
-            skeleton, slots, dep_graph = extract_template(first_response)
+            skeleton, slots, dep_graph, _slot_types = extract_template(first_response)
 
             template = ResponseTemplate(
                 intent_id=intent_id,

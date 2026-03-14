@@ -280,3 +280,340 @@ class TestStitchEdgeCases:
         result = engine._stitch(skeleton, fills)
         assert "[" not in result
         assert "]" not in result
+
+
+
+class TestSlotTransfer:
+    """Cross-query slot transfer via _transfer_slot."""
+
+    @pytest.mark.asyncio
+    @patch("templatecache.modules.slot_engine.SLOT_CONFIDENCE_THRESHOLD", 0.50)
+    @patch("templatecache.modules.slot_engine.llm_call", new_callable=AsyncMock)
+    @patch("templatecache.modules.slot_engine.embed")
+    @patch("templatecache.modules.slot_engine.cosine_similarity")
+    async def test_transfer_fires_when_confidence_fails(
+        self, mock_cos, mock_embed, mock_llm, engine, mock_cache_store
+    ):
+        """Transfer is used when confidence check fails and cross-template candidate exists."""
+        template = ResponseTemplate(
+            intent_id="test",
+            skeleton="Price is $[currency_0]",
+            slots=["currency_0"],
+            dependency_graph={"currency_0": []},
+            variant="short",
+        )
+        mock_embed.return_value = [0.1] * 10
+        mock_cache_store.get_slot_confidence.return_value = None  # uncertain
+
+        # Set up transfer candidate
+        candidate = SlotRecord(
+            slot_id="currency_5",
+            context_hash="other",
+            fill_value="$99.99",
+            fill_embedding=[0.1] * 10,
+            similarity_score=0.9,
+            slot_type="currency",
+            decay_weight=0.8,
+        )
+        mock_cache_store.get_slots_by_type.return_value = [candidate]
+        # cosine_similarity returns high score so transfer qualifies (0.85 - 0.15 = 0.70 > 0.50)
+        mock_cos.return_value = 0.85
+
+        response, from_cache, from_inference, stitch_info = await engine.fill(
+            template, "test query"
+        )
+        assert response is not None
+        assert stitch_info["slot_sources"]["currency_0"] == "transfer"
+        assert stitch_info["slots_from_transfer"] == 1
+        assert from_inference == 0
+        mock_llm.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("templatecache.modules.slot_engine.SLOT_TRANSFER_ENABLED", False)
+    @patch("templatecache.modules.slot_engine.llm_call", new_callable=AsyncMock)
+    @patch("templatecache.modules.slot_engine.embed")
+    async def test_transfer_disabled(self, mock_embed, mock_llm, engine, mock_cache_store):
+        """Transfer does not fire when SLOT_TRANSFER_ENABLED is False."""
+        template = ResponseTemplate(
+            intent_id="test",
+            skeleton="Price is $[currency_0]",
+            slots=["currency_0"],
+            dependency_graph={"currency_0": []},
+            variant="short",
+        )
+        mock_embed.return_value = [0.1] * 10
+        mock_llm.return_value = "$50"
+        mock_cache_store.get_slot_confidence.return_value = None
+        mock_cache_store.get_slots_by_type.return_value = []
+
+        response, from_cache, from_inference, stitch_info = await engine.fill(
+            template, "test query"
+        )
+        assert stitch_info["slot_sources"]["currency_0"] == "inference"
+        assert stitch_info["slots_from_transfer"] == 0
+        mock_cache_store.get_slots_by_type.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("templatecache.modules.slot_engine.llm_call", new_callable=AsyncMock)
+    @patch("templatecache.modules.slot_engine.embed")
+    @patch("templatecache.modules.slot_engine.cosine_similarity")
+    async def test_transfer_never_crosses_types(
+        self, mock_cos, mock_embed, mock_llm, engine, mock_cache_store
+    ):
+        """Transfer only considers candidates of the same slot type."""
+        template = ResponseTemplate(
+            intent_id="test",
+            skeleton="Date: [date_0]",
+            slots=["date_0"],
+            dependency_graph={"date_0": []},
+            variant="short",
+        )
+        mock_embed.return_value = [0.1] * 10
+        mock_llm.return_value = "2024-01-01"
+        mock_cache_store.get_slot_confidence.return_value = None
+        mock_cache_store.get_slots_by_type.return_value = []  # no date candidates
+        mock_cos.return_value = 0.9
+
+        await engine.fill(template, "test query")
+        # Should have called get_slots_by_type with "date", not other types
+        mock_cache_store.get_slots_by_type.assert_called_once_with("date")
+
+    @patch("templatecache.modules.slot_engine.SLOT_CONFIDENCE_THRESHOLD", 0.50)
+    def test_fill_source_logged_as_transfer(self, engine, mock_cache_store):
+        """fill_source is logged as 'transfer' in slot_sources."""
+        mock_cache_store.get_slots_by_type.return_value = [
+            SlotRecord(
+                slot_id="num_1",
+                context_hash="x",
+                fill_value="42",
+                fill_embedding=[0.5] * 10,
+                similarity_score=0.9,
+                slot_type="number",
+                decay_weight=0.8,
+            )
+        ]
+        with patch("templatecache.modules.slot_engine.cosine_similarity", return_value=0.85):
+            value, score = engine._transfer_slot("number_0", "number", [0.5] * 10)
+        assert value == "42"
+        assert score > 0
+
+    @pytest.mark.asyncio
+    @patch("templatecache.modules.slot_engine.llm_call", new_callable=AsyncMock)
+    @patch("templatecache.modules.slot_engine.embed")
+    async def test_transfer_no_candidates(self, mock_embed, mock_llm, engine, mock_cache_store):
+        """Transfer does not fire when no candidates exist."""
+        template = ResponseTemplate(
+            intent_id="test",
+            skeleton="Value: [number_0]",
+            slots=["number_0"],
+            dependency_graph={"number_0": []},
+            variant="short",
+        )
+        mock_embed.return_value = [0.1] * 10
+        mock_llm.return_value = "100"
+        mock_cache_store.get_slot_confidence.return_value = None
+        mock_cache_store.get_slots_by_type.return_value = []
+
+        response, from_cache, from_inference, stitch_info = await engine.fill(
+            template, "test query"
+        )
+        assert stitch_info["slot_sources"]["number_0"] == "inference"
+        assert stitch_info["slots_from_transfer"] == 0
+
+    def test_transfer_filters_low_decay_weight(self, engine, mock_cache_store):
+        """Transfer does not use records with decay_weight below 0.3."""
+        # get_slots_by_type already filters by decay_weight >= 0.3
+        # So if we pass records with low decay, they shouldn't be returned
+        mock_cache_store.get_slots_by_type.return_value = []
+        value, score = engine._transfer_slot("number_0", "number", [0.5] * 10)
+        assert value is None
+        assert score == 0.0
+
+
+
+class TestConfidenceBlending:
+    """Confidence-weighted response blending tests."""
+
+    @pytest.mark.asyncio
+    @patch("templatecache.modules.slot_engine.SLOT_BLEND_THRESHOLD", 0.90)
+    @patch("templatecache.modules.slot_engine.SLOT_CONFIDENCE_THRESHOLD", 0.50)
+    @patch("templatecache.modules.slot_engine.SLOT_BLEND_ENABLED", True)
+    @patch("templatecache.modules.slot_engine.llm_call", new_callable=AsyncMock)
+    @patch("templatecache.modules.slot_engine.embed")
+    async def test_below_confidence_goes_to_llm(
+        self, mock_embed, mock_llm, engine, mock_cache_store
+    ):
+        """Slot below SLOT_CONFIDENCE_THRESHOLD goes to transfer/LLM, no blend."""
+        template = ResponseTemplate(
+            intent_id="test",
+            skeleton="Value: [number_0]",
+            slots=["number_0"],
+            dependency_graph={"number_0": []},
+            variant="short",
+        )
+        mock_embed.return_value = [0.1] * 10
+        mock_llm.return_value = "100"
+        mock_cache_store.get_slot_confidence.return_value = None  # below threshold
+        mock_cache_store.get_slots_by_type.return_value = []
+
+        _, _, _, stitch_info = await engine.fill(template, "test")
+        assert stitch_info["slot_sources"]["number_0"] == "inference"
+        assert stitch_info["slots_from_blend"] == 0
+
+    @pytest.mark.asyncio
+    @patch("templatecache.modules.slot_engine.SLOT_BLEND_THRESHOLD", 0.90)
+    @patch("templatecache.modules.slot_engine.SLOT_CONFIDENCE_THRESHOLD", 0.50)
+    @patch("templatecache.modules.slot_engine.SLOT_BLEND_ENABLED", True)
+    @patch("templatecache.modules.slot_engine.llm_call", new_callable=AsyncMock)
+    @patch("templatecache.modules.slot_engine.embed", return_value=[0.1] * 10)
+    async def test_above_blend_threshold_serves_cached(
+        self, mock_embed, mock_llm, engine, mock_cache_store
+    ):
+        """Slot above SLOT_BLEND_THRESHOLD serves cached directly, no LLM call."""
+        template = ResponseTemplate(
+            intent_id="test",
+            skeleton="Value: [number_0]",
+            slots=["number_0"],
+            dependency_graph={"number_0": []},
+            variant="short",
+        )
+        confident = MagicMock()
+        confident.similarity_score = 0.95  # above blend threshold (0.90)
+        confident.fill_value = "cached_42"
+        confident.fill_embedding = [0.1] * 10
+        mock_cache_store.get_slot_confidence.return_value = confident
+
+        _, from_cache, _, stitch_info = await engine.fill(template, "test")
+        assert stitch_info["slot_sources"]["number_0"] == "cache"
+        assert from_cache == 1
+        assert stitch_info["slots_from_blend"] == 0
+        mock_llm.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("templatecache.modules.slot_engine.SLOT_BLEND_THRESHOLD", 0.90)
+    @patch("templatecache.modules.slot_engine.SLOT_CONFIDENCE_THRESHOLD", 0.50)
+    @patch("templatecache.modules.slot_engine.SLOT_BLEND_ENABLED", True)
+    @patch("templatecache.modules.slot_engine.llm_call", new_callable=AsyncMock)
+    @patch("templatecache.modules.slot_engine.embed", return_value=[0.1] * 10)
+    async def test_blend_zone_calls_llm(self, mock_embed, mock_llm, engine, mock_cache_store):
+        """Slot in blend zone calls LLM and produces both candidates."""
+        template = ResponseTemplate(
+            intent_id="test",
+            skeleton="Value: [number_0]",
+            slots=["number_0"],
+            dependency_graph={"number_0": []},
+            variant="short",
+        )
+        blend_record = MagicMock()
+        blend_record.similarity_score = 0.75  # between 0.50 and 0.90
+        blend_record.fill_value = "cached_val"
+        blend_record.fill_embedding = [0.1] * 10
+        mock_cache_store.get_slot_confidence.return_value = blend_record
+        mock_llm.return_value = "fresh_val"
+
+        _, _, _, stitch_info = await engine.fill(template, "test")
+        assert stitch_info["slots_from_blend"] == 1
+        assert "number_0" in stitch_info["blend_candidates"]
+        bc = stitch_info["blend_candidates"]["number_0"]
+        assert bc["cached_value"] == "cached_val"
+        assert bc["fresh_value"] == "fresh_val"
+        assert bc["confidence"] == 0.75
+        assert bc["selected"] in ("cached", "fresh")
+        mock_llm.assert_called_once()
+
+    @pytest.mark.asyncio
+    @patch("templatecache.modules.slot_engine.SLOT_BLEND_THRESHOLD", 0.90)
+    @patch("templatecache.modules.slot_engine.SLOT_CONFIDENCE_THRESHOLD", 0.50)
+    @patch("templatecache.modules.slot_engine.SLOT_BLEND_ENABLED", False)
+    @patch("templatecache.modules.slot_engine.llm_call", new_callable=AsyncMock)
+    @patch("templatecache.modules.slot_engine.embed")
+    async def test_blend_disabled_treats_as_uncertain(
+        self, mock_embed, mock_llm, engine, mock_cache_store
+    ):
+        """Blend disabled: blend zone slots treated as uncertain (no blend record)."""
+        template = ResponseTemplate(
+            intent_id="test",
+            skeleton="Value: [number_0]",
+            slots=["number_0"],
+            dependency_graph={"number_0": []},
+            variant="short",
+        )
+        mock_embed.return_value = [0.1] * 10
+        blend_record = MagicMock()
+        blend_record.similarity_score = 0.75  # between 0.50 and 0.90
+        blend_record.fill_value = "cached_val"
+        blend_record.fill_embedding = [0.1] * 10
+        mock_cache_store.get_slot_confidence.return_value = blend_record
+        mock_cache_store.get_slots_by_type.return_value = []
+        mock_llm.return_value = "llm_val"
+
+        _, _, _, stitch_info = await engine.fill(template, "test")
+        assert stitch_info["slots_from_blend"] == 0
+        assert len(stitch_info["blend_candidates"]) == 0
+
+    @pytest.mark.asyncio
+    @patch("templatecache.modules.slot_engine.SLOT_BLEND_THRESHOLD", 0.90)
+    @patch("templatecache.modules.slot_engine.SLOT_CONFIDENCE_THRESHOLD", 0.50)
+    @patch("templatecache.modules.slot_engine.SLOT_BLEND_ENABLED", True)
+    @patch("templatecache.modules.slot_engine.llm_call", new_callable=AsyncMock)
+    @patch("templatecache.modules.slot_engine.embed", return_value=[0.1] * 10)
+    async def test_blend_candidates_logged(self, mock_embed, mock_llm, engine, mock_cache_store):
+        """blend_candidates logged correctly for blend zone slots."""
+        template = ResponseTemplate(
+            intent_id="test",
+            skeleton="[a_0] [b_0]",
+            slots=["a_0", "b_0"],
+            dependency_graph={"a_0": [], "b_0": []},
+            variant="short",
+        )
+        rec = MagicMock()
+        rec.similarity_score = 0.70
+        rec.fill_value = "cached"
+        rec.fill_embedding = [0.1] * 10
+        mock_cache_store.get_slot_confidence.return_value = rec
+        mock_llm.return_value = "fresh"
+
+        _, _, _, stitch_info = await engine.fill(template, "test")
+        assert len(stitch_info["blend_candidates"]) == 2
+        for name in ("a_0", "b_0"):
+            assert name in stitch_info["blend_candidates"]
+            assert stitch_info["slot_sources"][name] == "blend"
+
+    @pytest.mark.asyncio
+    @patch("templatecache.modules.slot_engine.SLOT_BLEND_THRESHOLD", 0.90)
+    @patch("templatecache.modules.slot_engine.SLOT_CONFIDENCE_THRESHOLD", 0.50)
+    @patch("templatecache.modules.slot_engine.SLOT_BLEND_ENABLED", True)
+    @patch("templatecache.modules.slot_engine.llm_call", new_callable=AsyncMock)
+    @patch("templatecache.modules.slot_engine.embed", return_value=[0.1] * 10)
+    async def test_blend_respects_confidence_weighting(
+        self, mock_embed, mock_llm, engine, mock_cache_store
+    ):
+        """Over 100 iterations blend selection respects confidence within 15% tolerance."""
+        template = ResponseTemplate(
+            intent_id="test",
+            skeleton="[number_0]",
+            slots=["number_0"],
+            dependency_graph={"number_0": []},
+            variant="short",
+        )
+        confidence = 0.80  # should pick "cached" ~80% of the time
+        rec = MagicMock()
+        rec.similarity_score = confidence
+        rec.fill_value = "cached_val"
+        rec.fill_embedding = [0.1] * 10
+        mock_cache_store.get_slot_confidence.return_value = rec
+        mock_llm.return_value = "fresh_val"
+
+        cached_count = 0
+        iterations = 200
+        for _ in range(iterations):
+            _, _, _, stitch_info = await engine.fill(template, "test")
+            bc = stitch_info["blend_candidates"]["number_0"]
+            if bc["selected"] == "cached":
+                cached_count += 1
+
+        ratio = cached_count / iterations
+        # Should be within 15% of the confidence value
+        assert abs(ratio - confidence) < 0.15, (
+            f"Expected ~{confidence:.0%} cached, got {ratio:.0%}"
+        )

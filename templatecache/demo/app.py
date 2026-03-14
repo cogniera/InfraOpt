@@ -13,8 +13,8 @@ from templatecache.demo.savings_log import SavingsLog
 from templatecache.main import TemplateCache
 
 app = FastAPI(title="TemplateCache Demo")
-_cache = TemplateCache()
 _log = SavingsLog()
+_cache = TemplateCache(savings_log=_log)
 _FRONTEND_PATH = Path(__file__).parent / "frontend.html"
 
 

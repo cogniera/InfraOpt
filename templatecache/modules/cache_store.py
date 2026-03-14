@@ -148,3 +148,100 @@ class CacheStore:
             key = f"intent:{centroid.intent_id}"
             self._redis.set(key, json.dumps(centroid.__dict__))
 
+    def get_slots_by_type(self, slot_type: str) -> List[SlotRecord]:
+        """Retrieve all SlotRecords matching a given slot type.
+
+        Scans all Redis keys matching ``slot:*``, deserializes each
+        SlotRecord, and returns those whose ``slot_type`` matches the
+        requested type. Records with ``decay_weight`` below 0.3 are
+        filtered out.
+
+        Args:
+            slot_type: The slot type to filter by (e.g. 'currency', 'date').
+
+        Returns:
+            List of matching SlotRecord objects with decay_weight >= 0.3.
+        """
+        results: List[SlotRecord] = []
+        cursor = 0
+        while True:
+            cursor, keys = self._redis.scan(cursor=cursor, match="slot:*", count=100)
+            for key in keys:
+                raw = self._redis.get(key)
+                if raw is None:
+                    continue
+                data = json.loads(raw)
+                record = SlotRecord(**data)
+                if record.slot_type != slot_type:
+                    continue
+                # Apply time-based decay for filtering
+                created = datetime.fromisoformat(record.created_at)
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=UTC)
+                age_days = (datetime.now(UTC) - created).days
+                periods = age_days / CONFIDENCE_DECAY_DAYS
+                decay = math.pow(CONFIDENCE_DECAY_FACTOR, periods)
+                record.decay_weight = decay
+                if record.decay_weight < 0.3:
+                    continue
+                results.append(record)
+            if cursor == 0:
+                break
+        return results
+
+    def store_gap(self, template_id: str, gap_type: str, aspect: str) -> None:
+        """Record a detected gap for a template.
+
+        Increments a counter at ``gap:{template_id}:{gap_type}`` and
+        appends the aspect text to the stored list.
+
+        Args:
+            template_id: The template intent ID.
+            gap_type: Classified gap type (e.g. 'temporal', 'comparison').
+            aspect: The query aspect text that triggered the gap.
+
+        Side effects:
+            Writes to Redis key ``gap:{template_id}:{gap_type}``.
+        """
+        key = f"gap:{template_id}:{gap_type}"
+        raw = self._redis.get(key)
+        if raw is None:
+            data = {"count": 0, "aspects": []}
+        else:
+            data = json.loads(raw)
+        data["count"] = data.get("count", 0) + 1
+        aspects = data.get("aspects", [])
+        aspects.append(aspect)
+        data["aspects"] = aspects
+        self._redis.set(key, json.dumps(data))
+
+    def get_gap_counts(self, template_id: str) -> dict:
+        """Return all gap type counts for a template.
+
+        Args:
+            template_id: The template intent ID.
+
+        Returns:
+            Dict mapping gap_type to count (e.g. {'temporal': 3, 'comparison': 1}).
+        """
+        result: dict = {}
+        cursor = 0
+        while True:
+            cursor, keys = self._redis.scan(
+                cursor=cursor, match=f"gap:{template_id}:*", count=100
+            )
+            for key in keys:
+                raw = self._redis.get(key)
+                if raw is None:
+                    continue
+                data = json.loads(raw)
+                # key format: gap:{template_id}:{gap_type}
+                parts = key.split(":")
+                if len(parts) >= 3:
+                    gap_type = parts[2]
+                    result[gap_type] = data.get("count", 0)
+            if cursor == 0:
+                break
+        return result
+
+

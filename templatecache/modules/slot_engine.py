@@ -6,14 +6,21 @@ import logging
 import re
 from typing import Dict, List, Optional, Tuple
 
+import random
+
 from templatecache.config import (
+    SLOT_BLEND_ENABLED,
+    SLOT_BLEND_THRESHOLD,
     SLOT_CONFIDENCE_THRESHOLD,
+    SLOT_TRANSFER_ENABLED,
+    SLOT_TRANSFER_PENALTY,
     UNCERTAIN_SLOT_FALLBACK_RATIO,
 )
 from templatecache.models.slot import SlotRecord
 from templatecache.models.template import ResponseTemplate
 from templatecache.modules.cache_store import CacheStore
 from templatecache.utils.embedder import cosine_similarity, embed
+from templatecache.utils.extractor import classify_slot
 from templatecache.utils.llm import llm_call
 
 logger = logging.getLogger(__name__)
@@ -119,6 +126,95 @@ class SlotEngine:
         return v.strip()
 
 
+    def _transfer_slot(
+        self,
+        slot_name: str,
+        slot_type: str,
+        query_embedding: List[float],
+    ) -> Tuple[Optional[str], float]:
+        """Attempt to fill a slot by transferring a value from another template.
+
+        Searches all SlotRecords of the same type across all templates.
+        Computes similarity between each candidate's fill_embedding and the
+        current query_embedding. Applies SLOT_TRANSFER_PENALTY to the score.
+        Returns the best fill value if it exceeds SLOT_CONFIDENCE_THRESHOLD
+        after penalty.
+
+        Args:
+            slot_name: The slot name to fill.
+            slot_type: The classified type of the slot (e.g. 'numeric').
+            query_embedding: Embedding vector of the current query.
+
+        Returns:
+            Tuple of (fill_value, penalised_score) if a candidate qualifies,
+            or (None, 0.0) if no candidate qualifies or transfer is disabled.
+        """
+        if not SLOT_TRANSFER_ENABLED:
+            return None, 0.0
+
+        candidates = self._cache_store.get_slots_by_type(slot_type)
+        if not candidates:
+            return None, 0.0
+
+        best_value: Optional[str] = None
+        best_score: float = 0.0
+
+        for record in candidates:
+            if not record.fill_embedding:
+                continue
+            raw_sim = cosine_similarity(query_embedding, record.fill_embedding)
+            penalised = raw_sim - SLOT_TRANSFER_PENALTY
+            if penalised > best_score and penalised >= SLOT_CONFIDENCE_THRESHOLD:
+                best_score = penalised
+                best_value = record.fill_value
+
+        if best_value is not None:
+            logger.info(
+                "Transfer slot '%s' (type=%s): score=%.3f",
+                slot_name, slot_type, best_score,
+            )
+
+        return best_value, best_score
+
+
+    async def _blend_fills(
+        self,
+        slot_name: str,
+        cached_value: str,
+        fresh_value: str,
+        confidence: float,
+    ) -> Tuple[str, Dict]:
+        """Select between a cached and fresh fill using confidence weighting.
+
+        Uses the confidence score as the probability of selecting the cached
+        value. Higher confidence → more likely to keep the cached value.
+
+        Args:
+            slot_name: The slot name being filled.
+            cached_value: The cached fill value.
+            fresh_value: The freshly LLM-generated fill value.
+            confidence: The confidence score (0.0 to 1.0).
+
+        Returns:
+            Tuple of (selected_value, blend_record) where blend_record
+            contains cached_value, fresh_value, confidence, and which
+            was selected.
+        """
+        use_cached = random.random() < confidence
+        selected = cached_value if use_cached else fresh_value
+        blend_record = {
+            "cached_value": cached_value,
+            "fresh_value": fresh_value,
+            "confidence": confidence,
+            "selected": "cached" if use_cached else "fresh",
+        }
+        logger.info(
+            "Blend slot '%s': confidence=%.3f, selected=%s",
+            slot_name, confidence, blend_record["selected"],
+        )
+        return selected, blend_record
+
+
     def _build_supplement_prompt(
         self, query: str, gap: str, existing_response: str
     ) -> str:
@@ -198,16 +294,26 @@ class SlotEngine:
             }
             return template.skeleton, 0, 0, stitch_info
 
-        # Phase 1: Check confidence for all slots
+        # Phase 1: Three-state confidence classification
+        #   score >= SLOT_BLEND_THRESHOLD       → confident, serve cached
+        #   SLOT_CONFIDENCE_THRESHOLD <= score   → blend zone
+        #   score < SLOT_CONFIDENCE_THRESHOLD    → uncertain
         uncertain_slots: List[str] = []
+        blend_slots: Dict[str, SlotRecord] = {}  # slot_name → record
         cached_fills: Dict[str, str] = {}
         slot_sources: Dict[str, str] = {}
 
         for slot_name in ordered_slots:
             record = self._cache_store.get_slot_confidence(slot_name, ctx_hash)
-            if record is not None and record.similarity_score >= SLOT_CONFIDENCE_THRESHOLD:
+            if record is not None and record.similarity_score >= SLOT_BLEND_THRESHOLD:
                 cached_fills[slot_name] = record.fill_value
                 slot_sources[slot_name] = "cache"
+            elif (
+                SLOT_BLEND_ENABLED
+                and record is not None
+                and record.similarity_score >= SLOT_CONFIDENCE_THRESHOLD
+            ):
+                blend_slots[slot_name] = record
             else:
                 uncertain_slots.append(slot_name)
 
@@ -228,13 +334,48 @@ class SlotEngine:
             )
             return None, 0, 0, {}
 
-        # Phase 3: Fill uncertain slots sequentially in dependency order
+        # Phase 2.5: Process blend zone slots — generate fresh fill and
+        # select between cached and fresh using confidence as probability.
         fills: Dict[str, str] = dict(cached_fills)
+        slots_from_blend = 0
+        blend_candidates: Dict[str, Dict] = {}
+
+        for slot_name, record in blend_slots.items():
+            prompt = self._build_slot_prompt(query, slot_name, fills, template)
+            fresh_value = await llm_call(prompt, max_tokens=80)
+            fresh_value = self._clean_fill_value(fresh_value)
+            selected, blend_record = await self._blend_fills(
+                slot_name, record.fill_value, fresh_value, record.similarity_score
+            )
+            fills[slot_name] = selected
+            slot_sources[slot_name] = "blend"
+            blend_candidates[slot_name] = blend_record
+            slots_from_blend += 1
+
+        # Phase 3: Fill uncertain slots sequentially in dependency order
+        # Try cross-query transfer before falling back to LLM.
         slots_from_inference = 0
+        slots_from_transfer = 0
+        query_embedding = embed(query)
 
         for slot_name in ordered_slots:
             if slot_name in fills:
                 continue
+
+            # Determine slot type from the name prefix (e.g. number_0 → number)
+            slot_type = slot_name.rsplit("_", 1)[0] if "_" in slot_name else "boilerplate"
+
+            # Attempt cross-query transfer first
+            transfer_value, transfer_score = self._transfer_slot(
+                slot_name, slot_type, query_embedding
+            )
+            if transfer_value is not None:
+                fills[slot_name] = transfer_value
+                slot_sources[slot_name] = "transfer"
+                slots_from_transfer += 1
+                continue
+
+            # Fall back to LLM
             prompt = self._build_slot_prompt(query, slot_name, fills, template)
             fill_value = await llm_call(prompt, max_tokens=80)
             fill_value = self._clean_fill_value(fill_value)
@@ -250,6 +391,7 @@ class SlotEngine:
                 fill_value=fill_value.strip(),
                 fill_embedding=fill_emb,
                 similarity_score=1.0,
+                slot_type=classify_slot(fill_value.strip()),
             )
             asyncio.create_task(self._cache_store.write_back(slot_record=new_record))
 
@@ -309,5 +451,8 @@ class SlotEngine:
             "has_slots": bool(fills),
             "gaps_detected": gaps or [],
             "full_query_gap": full_query_gap,
+            "slots_from_transfer": slots_from_transfer,
+            "slots_from_blend": slots_from_blend,
+            "blend_candidates": blend_candidates,
         }
         return response, len(cached_fills), slots_from_inference, stitch_info

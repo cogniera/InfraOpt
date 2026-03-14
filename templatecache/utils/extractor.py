@@ -9,6 +9,48 @@ from templatecache.utils.embedder import cosine_similarity, embed
 _ELABORATION_KEYWORDS = {"explain", "detail", "describe", "how does", "walk me through"}
 _LIST_KEYWORDS = {"list", "what are", "give me", "options", "compare"}
 
+# ── Slot type classification ─────────────────────────────────────────────
+
+_CURRENCY_RE = re.compile(r"^\$[\d,.]+$|^[\d,.]+\s*(USD|EUR|GBP|JPY|CAD|AUD)$", re.IGNORECASE)
+_DATE_RE = re.compile(r"^\d{4}[-/]\d{2}[-/]\d{2}$|^\d{1,2}[-/]\d{1,2}[-/]\d{2,4}$")
+_PERCENTAGE_RE = re.compile(r"^[\d.]+%$")
+_NUMERIC_RE = re.compile(r"^[\d,.]+$")
+_NAMED_ENTITY_RE = re.compile(r"^[A-Z][a-z]+(?: [A-Z][a-z]+)+$")
+
+
+def classify_slot(value: str) -> str:
+    """Classify a slot fill value into a semantic type.
+
+    Classification order (first match wins):
+    1. currency — dollar signs or currency codes
+    2. date — date patterns (YYYY-MM-DD, MM/DD/YYYY, etc.)
+    3. percentage — number followed by %
+    4. named_entity — two or more capitalized words (proper nouns)
+    5. numeric — plain numbers with optional commas/decimals
+    6. boilerplate — everything else (stable, free text)
+
+    Args:
+        value: The slot fill value string to classify.
+
+    Returns:
+        One of: 'currency', 'date', 'percentage', 'named_entity',
+        'numeric', 'boilerplate'.
+    """
+    v = value.strip()
+    if not v:
+        return "boilerplate"
+    if _CURRENCY_RE.match(v):
+        return "currency"
+    if _DATE_RE.match(v):
+        return "date"
+    if _PERCENTAGE_RE.match(v):
+        return "percentage"
+    if _NAMED_ENTITY_RE.match(v):
+        return "named_entity"
+    if _NUMERIC_RE.match(v):
+        return "numeric"
+    return "boilerplate"
+
 
 def determine_variant(query: str, response_token_count: int | None = None) -> str:
     """Determine the variant tag for a query.
@@ -51,26 +93,30 @@ def determine_variant(query: str, response_token_count: int | None = None) -> st
     return "detailed"
 
 
-def extract_template(response: str) -> Tuple[str, List[str], Dict[str, List[str]]]:
+def extract_template(
+    response: str,
+) -> Tuple[str, List[str], Dict[str, List[str]], Dict[str, str]]:
     """Extract a template skeleton from an LLM response.
 
     Identifies variable portions of the response and replaces them with
-    [slot_name] markers. Returns the skeleton, ordered slot list, and
-    dependency graph.
+    [slot_name] markers. Returns the skeleton, ordered slot list,
+    dependency graph, and slot type classifications.
 
     Args:
         response: The full LLM response text.
 
     Returns:
-        Tuple of (skeleton, slots, dependency_graph) where:
+        Tuple of (skeleton, slots, dependency_graph, slot_types) where:
         - skeleton: response text with [slot_name] placeholders
         - slots: ordered list of slot names
         - dependency_graph: maps each slot to its dependency slots
+        - slot_types: maps each slot name to its classified type
     """
     lines = response.strip().split("\n")
     skeleton_lines: List[str] = []
     slots: List[str] = []
     dependency_graph: Dict[str, List[str]] = {}
+    slot_types: Dict[str, str] = {}
     slot_counter = 0
     in_code_block = False
 
@@ -104,6 +150,8 @@ def extract_template(response: str) -> Tuple[str, List[str], Dict[str, List[str]
                 slot_name = f"{slot_type}_{slot_counter}"
                 slot_counter += 1
                 slots.append(slot_name)
+                # Classify the matched value
+                slot_types[slot_name] = classify_slot(match.group())
                 # Slots depend on previously found slots in the same line
                 deps = [s for s in slots[:-1] if s in processed_line.replace(
                     match.group(), f"[{slot_name}]"
@@ -121,7 +169,7 @@ def extract_template(response: str) -> Tuple[str, List[str], Dict[str, List[str]
 
     # If no slots were extracted, keep the full response as the skeleton
     # with no slots — the slot engine will return it as-is.
-    return skeleton, slots, dependency_graph
+    return skeleton, slots, dependency_graph, slot_types
 
 
 # Splitter patterns for breaking queries into distinct aspects

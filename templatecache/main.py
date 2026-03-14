@@ -6,6 +6,7 @@ from typing import Dict, List
 
 from templatecache.modules.cache_store import CacheStore
 from templatecache.modules.cluster_router import ClusterRouter
+from templatecache.modules.gap_learner import GapLearner
 from templatecache.modules.router import IntentRouter
 from templatecache.modules.slot_engine import SlotEngine
 from templatecache.utils.extractor import (
@@ -78,12 +79,18 @@ class TemplateCache:
     drop-in caching primitive.
     """
 
-    def __init__(self) -> None:
-        """Initialize TemplateCache with all sub-modules."""
+    def __init__(self, savings_log=None) -> None:
+        """Initialize TemplateCache with all sub-modules.
+
+        Args:
+            savings_log: Optional SavingsLog for recording promotion events.
+        """
         self._cache_store = CacheStore()
         self._router = IntentRouter(self._cache_store)
         self._cluster_router = ClusterRouter()
         self._slot_engine = SlotEngine(self._cache_store)
+        self._gap_learner = GapLearner(self._cache_store, savings_log=savings_log)
+        self._savings_log = savings_log
         self._seeded = False
 
     async def _ensure_seeded(self) -> None:
@@ -272,12 +279,26 @@ class TemplateCache:
                     if cluster_label:
                         stitch_info["cluster"] = cluster_label
 
+                    # Gap pattern learning: record gaps and check promotions
+                    slots_promoted: list = []
+                    gaps = stitch_info.get("gaps_detected", [])
+                    if gaps and intent_id:
+                        for gap_aspect in gaps:
+                            gap_type = self._gap_learner.classify_gap(gap_aspect)
+                            self._gap_learner.store_gap(intent_id, gap_type, gap_aspect)
+                        promoted = self._gap_learner.check_promotion(intent_id)
+                        if promoted:
+                            slots_promoted = promoted
+                    stitch_info["slots_promoted"] = slots_promoted
+
                     return {
                         "response": response,
                         "cache_hit": True,
                         "intent_id": intent_id,
                         "slots_from_cache": from_cache,
                         "slots_from_inference": from_inference,
+                        "slots_from_transfer": stitch_info.get("slots_from_transfer", 0),
+                        "slots_from_blend": stitch_info.get("slots_from_blend", 0),
                         "estimated_full_tokens": estimated_full,
                         "actual_tokens_used": actual_used,
                         "savings_ratio": savings,
@@ -289,7 +310,7 @@ class TemplateCache:
         response_text = await llm_call(miss_prompt, max_tokens=512)
 
         # Extract template for future use
-        skeleton, slots, dep_graph = extract_template(response_text)
+        skeleton, slots, dep_graph, _slot_types = extract_template(response_text)
         variant = determine_variant(prompt)
 
         if intent_id is None:
