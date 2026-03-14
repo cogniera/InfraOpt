@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TemplateCache</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f0f0f; color: #e0e0e0; height: 100vh; display: flex; flex-direction: column; }
+  header { padding: 16px 24px; border-bottom: 1px solid #2a2a2a; display: flex; justify-content: space-between; align-items: center; }
+  header h1 { font-size: 18px; font-weight: 600; color: #fff; }
+  #stats-bar { font-size: 13px; color: #888; }
+  #stats-bar span { margin-left: 16px; }
+  .hit { color: #4ade80; }
+  .miss { color: #f87171; }
+  #chat { flex: 1; overflow-y: auto; padding: 24px; display: flex; flex-direction: column; gap: 16px; }
+  .msg { max-width: 720px; width: 100%; margin: 0 auto; padding: 14px 18px; border-radius: 12px; line-height: 1.6; font-size: 15px; white-space: pre-wrap; }
+  .msg.user { background: #1e3a5f; align-self: flex-end; border-bottom-right-radius: 4px; }
+  .msg.bot { background: #1a1a1a; border: 1px solid #2a2a2a; border-bottom-left-radius: 4px; }
+  .msg .meta { margin-top: 10px; font-size: 12px; color: #666; border-top: 1px solid #2a2a2a; padding-top: 8px; }
+  .msg .meta .tag { display: inline-block; padding: 2px 8px; border-radius: 4px; margin-right: 6px; font-size: 11px; }
+  .msg .meta .tag.hit { background: #14532d; color: #4ade80; }
+  .msg .meta .tag.miss { background: #450a0a; color: #f87171; }
+  .stitch-toggle { cursor: pointer; color: #60a5fa; font-size: 12px; margin-left: 8px; text-decoration: underline; }
+  .stitch-toggle:hover { color: #93bbfc; }
+  .stitch-panel { margin-top: 10px; border-top: 1px solid #2a2a2a; padding-top: 10px; display: none; font-size: 13px; }
+  .stitch-panel.open { display: block; }
+  .stitch-section { margin-bottom: 10px; }
+  .stitch-label { font-weight: 600; color: #888; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+  .stitch-skeleton { background: #111; border: 1px solid #333; border-radius: 6px; padding: 10px 12px; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-x: auto; }
+  .stitch-skeleton .slot-marker { background: #1e3a5f; color: #60a5fa; padding: 1px 5px; border-radius: 3px; font-weight: 600; }
+  .stitch-skeleton .skeleton-text { color: #9ca3af; }
+  .slot-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .slot-table th { text-align: left; color: #888; font-weight: 500; padding: 4px 8px; border-bottom: 1px solid #2a2a2a; }
+  .slot-table td { padding: 4px 8px; border-bottom: 1px solid #1a1a1a; }
+  .slot-table .slot-name { color: #60a5fa; font-family: monospace; }
+  .slot-table .slot-value { color: #e0e0e0; max-width: 400px; overflow: hidden; text-overflow: ellipsis; }
+  .slot-table .source-cache { color: #4ade80; font-size: 11px; }
+  .slot-table .source-inference { color: #fbbf24; font-size: 11px; }
+  .stitch-arrow { text-align: center; color: #555; font-size: 18px; padding: 4px 0; }
+  .stitch-result { background: #0a1a0a; border: 1px solid #14532d; border-radius: 6px; padding: 10px 12px; font-size: 12px; line-height: 1.5; white-space: pre-wrap; }
+  .stitch-result .filled-slot { background: #14532d; color: #4ade80; padding: 1px 5px; border-radius: 3px; }
+  .no-slots-badge { display: inline-block; background: #1e293b; color: #94a3b8; padding: 3px 10px; border-radius: 4px; font-size: 11px; }
+  #input-area { padding: 16px 24px; border-top: 1px solid #2a2a2a; display: flex; gap: 12px; max-width: 768px; width: 100%; margin: 0 auto; }
+  #prompt { flex: 1; padding: 12px 16px; border-radius: 10px; border: 1px solid #333; background: #1a1a1a; color: #e0e0e0; font-size: 15px; outline: none; resize: none; font-family: inherit; }
+  #prompt:focus { border-color: #555; }
+  #send { padding: 12px 24px; border-radius: 10px; border: none; background: #2563eb; color: #fff; font-size: 15px; cursor: pointer; font-weight: 500; }
+  #send:hover { background: #1d4ed8; }
+  #send:disabled { background: #333; cursor: not-allowed; }
+  .spinner { display: inline-block; width: 18px; height: 18px; border: 2px solid #444; border-top-color: #aaa; border-radius: 50%; animation: spin .6s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<header>
+  <h1>⚡ TemplateCache</h1>
+  <div id="stats-bar">Loading stats...</div>
+</header>
+<div id="chat"></div>
+<div id="input-area">
+  <textarea id="prompt" rows="1" placeholder="Type a prompt..." autofocus></textarea>
+  <button id="send">Send</button>
+</div>
+<script>
+const chat = document.getElementById('chat');
+const input = document.getElementById('prompt');
+const btn = document.getElementById('send');
+const statsBar = document.getElementById('stats-bar');
+
+async function refreshStats() {
+  try {
+    const r = await fetch('/stats');
+    const s = await r.json();
+    statsBar.innerHTML =
+      `<span>Requests: ${s.total_requests}</span>` +
+      `<span>Hit rate: ${(s.cache_hit_rate * 100).toFixed(1)}%</span>` +
+      `<span>Avg savings: ${(s.average_savings_ratio * 100).toFixed(1)}%</span>` +
+      `<span>Tokens saved: ${s.total_tokens_saved}</span>`;
+  } catch(e) { statsBar.textContent = 'Stats unavailable'; }
+}
+
+function addMsg(text, cls, meta) {
+  const d = document.createElement('div');
+  d.className = 'msg ' + cls;
+  d.textContent = text;
+  if (meta) {
+    const m = document.createElement('div');
+    m.className = 'meta';
+    m.innerHTML = meta;
+    d.appendChild(m);
+  }
+  chat.appendChild(d);
+  chat.scrollTop = chat.scrollHeight;
+  return d;
+}
+
+async function send() {
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = '';
+  addMsg(text, 'user');
+  btn.disabled = true;
+  const loading = addMsg('', 'bot');
+  loading.innerHTML = '<div class="spinner"></div>';
+
+  try {
+    const r = await fetch('/query', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({prompt: text})
+    });
+    const d = await r.json();
+    const tag = d.cache_hit
+      ? '<span class="tag hit">CACHE HIT</span>'
+      : '<span class="tag miss">CACHE MISS</span>';
+    const meta = `${tag} savings: ${(d.savings_ratio * 100).toFixed(1)}% · ` +
+      `slots cached: ${d.slots_from_cache} · slots inferred: ${d.slots_from_inference}`;
+    loading.textContent = d.response;
+    const m = document.createElement('div');
+    m.className = 'meta';
+    m.innerHTML = meta;
+    // Add stitch toggle if cache hit
+    if (d.cache_hit && d.stitch) {
+      const toggleId = 'stitch-' + Date.now();
+      const toggle = document.createElement('span');
+      toggle.className = 'stitch-toggle';
+      toggle.textContent = '▶ Show stitching';
+      toggle.onclick = () => {
+        const panel = document.getElementById(toggleId);
+        panel.classList.toggle('open');
+        toggle.textContent = panel.classList.contains('open') ? '▼ Hide stitching' : '▶ Show stitching';
+      };
+      m.appendChild(toggle);
+      const panel = document.createElement('div');
+      panel.className = 'stitch-panel';
+      panel.id = toggleId;
+      panel.innerHTML = buildStitchViz(d.stitch, d.intent_id);
+      m.appendChild(panel);
+    }
+    loading.appendChild(m);
+  } catch(e) {
+    loading.textContent = 'Error: ' + e.message;
+  }
+  btn.disabled = false;
+  refreshStats();
+  input.focus();
+}
+
+function buildStitchViz(stitch, intentId) {
+  const gaps = stitch.gaps_detected || [];
+  const hasGaps = gaps.length > 0;
+  let html = `<div class="stitch-section"><div class="stitch-label">🎯 Matched Intent</div><code style="color:#60a5fa">${intentId}</code></div>`;
+
+  if (!stitch.has_slots && !hasGaps) {
+    html += `<div class="stitch-section"><div class="stitch-label">📋 Template (no slots)</div>`;
+    html += `<div class="stitch-skeleton"><span class="skeleton-text">${escHtml(stitch.skeleton)}</span></div>`;
+    html += `<div style="margin-top:6px"><span class="no-slots-badge">✓ Entire response served from cache — no LLM calls needed</span></div></div>`;
+    return html;
+  }
+
+  // Supplement error — gaps detected but LLM couldn't fill them
+  if (stitch.supplement_error && hasGaps) {
+    html += `<div class="stitch-section"><div class="stitch-label">📋 Cached Response</div>`;
+    html += `<div class="stitch-skeleton"><span class="skeleton-text">${escHtml(stitch.skeleton)}</span></div></div>`;
+    html += `<div class="stitch-section"><div class="stitch-label">🔍 Gaps Detected</div>`;
+    html += `<div style="font-size:12px;color:#fbbf24">These aspects weren't covered by the cache:</div><ul style="margin:4px 0 0 16px;font-size:12px;color:#fbbf24">`;
+    for (const g of gaps) html += `<li>"${escHtml(g)}"</li>`;
+    html += `</ul><div style="margin-top:6px;font-size:12px;color:#f87171">⚠ LLM call failed — served cached part only. Try again when API quota resets.</div></div>`;
+    return html;
+  }
+
+  // Show detected gaps
+  if (hasGaps) {
+    html += `<div class="stitch-section"><div class="stitch-label">🔍 Gaps Detected</div>`;
+    html += `<div style="font-size:12px;color:#fbbf24">Query aspects not covered by cache:</div><ul style="margin:4px 0 0 16px;font-size:12px;color:#fbbf24">`;
+    for (const g of gaps) html += `<li>"${escHtml(g)}"</li>`;
+    html += `</ul></div>`;
+  }
+
+  // Skeleton with highlighted slot markers
+  const slotNames = Object.keys(stitch.slot_fills);
+  const regularSlots = slotNames.filter(n => !n.startsWith('supplement_'));
+  const supplementSlots = slotNames.filter(n => n.startsWith('supplement_'));
+
+  // Show skeleton — split into cached part and supplement markers
+  let skelParts = stitch.skeleton.split(/\n\n(?=\[supplement_)/);
+  let cachedSkel = escHtml(skelParts[0]);
+  for (const name of regularSlots) {
+    cachedSkel = cachedSkel.replaceAll(`[${name}]`, `<span class="slot-marker">[${name}]</span>`);
+  }
+  html += `<div class="stitch-section"><div class="stitch-label">📋 Cached Template</div><div class="stitch-skeleton"><span class="skeleton-text">${cachedSkel}</span></div></div>`;
+
+  if (supplementSlots.length > 0) {
+    let suppSkel = '';
+    for (const name of supplementSlots) {
+      suppSkel += `<span class="slot-marker" style="background:#92400e;color:#fbbf24">[${name}]</span>\n`;
+    }
+    html += `<div class="stitch-section"><div class="stitch-label">➕ Supplement Slots (LLM-generated for gaps)</div><div class="stitch-skeleton">${suppSkel}</div></div>`;
+  }
+
+  // Slot fills table
+  if (slotNames.length > 0) {
+    html += `<div class="stitch-section"><div class="stitch-label">🔧 Slot Fills</div><table class="slot-table"><tr><th>Slot</th><th>Value</th><th>Source</th></tr>`;
+    for (const name of slotNames) {
+      const src = stitch.slot_sources[name];
+      const srcClass = src === 'cache' ? 'source-cache' : 'source-inference';
+      const srcLabel = src === 'cache' ? '✓ CACHE' : '⚡ LLM';
+      const isSupp = name.startsWith('supplement_');
+      const nameStyle = isSupp ? 'color:#fbbf24' : '';
+      html += `<tr><td class="slot-name" style="${nameStyle}">[${name}]</td><td class="slot-value">${escHtml(stitch.slot_fills[name])}</td><td class="${srcClass}">${srcLabel}</td></tr>`;
+    }
+    html += `</table></div>`;
+  }
+
+  html += `<div class="stitch-arrow">↓ stitch ↓</div>`;
+
+  // Final stitched result
+  let resultHtml = escHtml(stitch.skeleton);
+  for (const name of regularSlots) {
+    resultHtml = resultHtml.replaceAll(`[${name}]`, `<span class="filled-slot">${escHtml(stitch.slot_fills[name])}</span>`);
+  }
+  for (const name of supplementSlots) {
+    resultHtml = resultHtml.replaceAll(`[${name}]`, `<span class="filled-slot" style="background:#92400e;color:#fbbf24">${escHtml(stitch.slot_fills[name])}</span>`);
+  }
+  html += `<div class="stitch-section"><div class="stitch-label">✅ Stitched Result</div><div class="stitch-result">${resultHtml}</div></div>`;
+
+  return html;
+}
+
+function escHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+btn.addEventListener('click', send);
+input.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+});
+input.addEventListener('input', () => {
+  input.style.height = 'auto';
+  input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+});
+refreshStats();
+</script>
+</body>
+</html>
+
