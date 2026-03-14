@@ -219,26 +219,49 @@ class SlotEngine:
 
         # Phase 5: Fill supplement slots for uncovered query gaps
         supplement_fills: Dict[str, str] = {}
+        full_query_gap = False
         if has_gaps:
-            skeleton_with_supplements = response
+            # If the gap IS the entire query (single aspect, same text as
+            # the query), the cached response is irrelevant — replace it
+            # entirely with the LLM-generated supplement.
+            full_query_gap = (
+                len(gaps) == 1
+                and gaps[0].lower().strip() == query.lower().strip()
+            )
+
             for i, gap in enumerate(gaps):
                 slot_name = f"supplement_{i}"
-                prompt = self._build_supplement_prompt(query, gap, response)
+                if full_query_gap:
+                    # Full replacement: generate a direct answer
+                    prompt = (
+                        f"Answer this question concisely:\n{gap}"
+                    )
+                else:
+                    prompt = self._build_supplement_prompt(query, gap, response)
                 fill_value = await llm_call(prompt, max_tokens=150)
                 supplement_fills[slot_name] = fill_value.strip()
                 slot_sources[slot_name] = "inference"
                 slots_from_inference += 1
 
-            # Append supplements to response
-            for slot_name, value in supplement_fills.items():
-                skeleton_with_supplements += f"\n\n[{slot_name}]"
-                fills[slot_name] = value
-            response = self._stitch(skeleton_with_supplements, fills)
+            if full_query_gap:
+                # Replace cached response entirely with supplement
+                response = supplement_fills["supplement_0"]
+                fills = supplement_fills
+            else:
+                # Append supplements to cached response
+                skeleton_with_supplements = response
+                for slot_name, value in supplement_fills.items():
+                    skeleton_with_supplements += f"\n\n[{slot_name}]"
+                    fills[slot_name] = value
+                response = self._stitch(skeleton_with_supplements, fills)
 
-        skeleton_for_viz = template.skeleton
-        if has_gaps:
-            for slot_name in supplement_fills:
-                skeleton_for_viz += f"\n\n[{slot_name}]"
+        if full_query_gap:
+            skeleton_for_viz = "[supplement_0]"
+        else:
+            skeleton_for_viz = template.skeleton
+            if has_gaps:
+                for slot_name in supplement_fills:
+                    skeleton_for_viz += f"\n\n[{slot_name}]"
 
         stitch_info = {
             "skeleton": skeleton_for_viz,
@@ -246,5 +269,6 @@ class SlotEngine:
             "slot_sources": slot_sources,
             "has_slots": bool(fills),
             "gaps_detected": gaps or [],
+            "full_query_gap": full_query_gap,
         }
         return response, len(cached_fills), slots_from_inference, stitch_info

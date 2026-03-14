@@ -203,14 +203,20 @@ def split_multi_query(query: str) -> List[str]:
 # Minimum similarity for an aspect to be considered "covered" by the response
 _GAP_COVERAGE_THRESHOLD = 0.45
 
+# Minimum similarity between entire query and cached response for the
+# response to be considered relevant. Below this, the query is asking
+# about a different facet of the same topic (e.g. "weapons in WW2" vs
+# a cached response about "causes of WW2").
+_RESPONSE_RELEVANCE_THRESHOLD = 0.35
+
 
 def detect_query_gaps(query: str, cached_response: str) -> List[str]:
     """Detect aspects of a query not covered by the cached response.
 
-    Splits the query into semantic aspects (clauses separated by 'and',
-    commas, etc.), embeds each aspect and the cached response, then returns
-    aspects whose similarity to the response falls below the coverage
-    threshold.
+    For multi-aspect queries: splits into clauses and checks each against
+    the response. For single-aspect queries: checks if the query is
+    semantically relevant to the response — if not, the entire query is
+    returned as a gap (the cached response doesn't answer the question).
 
     Args:
         query: The user query text.
@@ -220,15 +226,20 @@ def detect_query_gaps(query: str, cached_response: str) -> List[str]:
         List of query aspect strings that are NOT covered by the cached
         response. Empty list if the response fully covers the query.
     """
+    response_embedding = embed(cached_response[:500])  # cap for efficiency
+
     # Split query into aspects
     aspects = _ASPECT_SPLITTERS.split(query.strip())
     aspects = [a.strip() for a in aspects if len(a.strip()) > 3]
 
-    # If only one aspect, no gaps possible — the intent already matched
+    # Single aspect: check if the response is relevant to the query at all
     if len(aspects) <= 1:
+        query_embedding = embed(query)
+        relevance = cosine_similarity(query_embedding, response_embedding)
+        if relevance < _RESPONSE_RELEVANCE_THRESHOLD:
+            return [query]
         return []
 
-    response_embedding = embed(cached_response[:500])  # cap for efficiency
     gaps: List[str] = []
 
     for aspect in aspects:
