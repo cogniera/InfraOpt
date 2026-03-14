@@ -7,7 +7,12 @@ from typing import Dict, List
 from templatecache.modules.cache_store import CacheStore
 from templatecache.modules.router import IntentRouter
 from templatecache.modules.slot_engine import SlotEngine
-from templatecache.utils.extractor import detect_query_gaps, determine_variant, extract_template
+from templatecache.utils.extractor import (
+    detect_query_gaps,
+    determine_variant,
+    extract_template,
+    split_multi_query,
+)
 from templatecache.utils.llm import llm_call
 
 logger = logging.getLogger(__name__)
@@ -97,12 +102,129 @@ class TemplateCache:
         self._seeded = True
 
 
+    async def _query_single(self, prompt: str) -> Dict:
+        """Process a single-topic query through the pipeline.
+
+        Args:
+            prompt: A single-topic user query.
+
+        Returns:
+            Dict with the full response contract.
+
+        Side effects:
+            May make LLM and embedding API calls. May write to Redis.
+        """
+        # Route query
+        intent_id, variant = self._router.route(prompt)
+
+        if intent_id is not None:
+            # Cache hit path
+            template = self._cache_store.get_template(intent_id)
+            if template is not None:
+                template.hit_count += 1
+                asyncio.create_task(
+                    self._cache_store.write_back(template=template)
+                )
+
+                # Detect query aspects not covered by the cached response
+                gaps = detect_query_gaps(prompt, template.skeleton)
+
+                try:
+                    response, from_cache, from_inference, stitch_info = (
+                        await self._slot_engine.fill(
+                            template, prompt, gaps=gaps
+                        )
+                    )
+                except Exception as slot_err:
+                    logger.warning(
+                        "Slot fill failed, serving cached response: %s",
+                        slot_err,
+                    )
+                    response = template.skeleton
+                    from_cache, from_inference = 0, 0
+                    stitch_info = {
+                        "skeleton": template.skeleton,
+                        "slot_fills": {},
+                        "slot_sources": {},
+                        "has_slots": False,
+                        "gaps_detected": gaps,
+                        "supplement_error": str(slot_err),
+                    }
+
+                if response is not None:
+                    estimated_full = len(response.split()) * 2
+                    actual_used = from_inference * 40
+                    savings = max(0.0, 1.0 - (actual_used / max(estimated_full, 1)))
+
+                    return {
+                        "response": response,
+                        "cache_hit": True,
+                        "intent_id": intent_id,
+                        "slots_from_cache": from_cache,
+                        "slots_from_inference": from_inference,
+                        "estimated_full_tokens": estimated_full,
+                        "actual_tokens_used": actual_used,
+                        "savings_ratio": savings,
+                        "stitch": stitch_info,
+                    }
+
+        # Cache miss — full LLM generation
+        miss_prompt = f"Answer concisely and directly.\n\n{prompt}"
+        response_text = await llm_call(miss_prompt, max_tokens=512)
+
+        # Extract template for future use
+        skeleton, slots, dep_graph = extract_template(response_text)
+        variant = determine_variant(prompt)
+
+        if intent_id is None:
+            import hashlib
+            intent_id = hashlib.sha256(prompt.encode()).hexdigest()[:16]
+
+        from templatecache.models.template import ResponseTemplate
+        from templatecache.models.intent import IntentCentroid
+        from templatecache.utils.embedder import embed
+
+        new_template = ResponseTemplate(
+            intent_id=intent_id,
+            skeleton=skeleton,
+            slots=slots,
+            dependency_graph=dep_graph,
+            variant=variant,
+        )
+
+        query_emb = embed(prompt)
+        new_centroid = IntentCentroid(
+            intent_id=intent_id,
+            centroid_embedding=query_emb,
+            template_id=intent_id,
+            variant=variant,
+            query_count=1,
+        )
+
+        asyncio.create_task(
+            self._cache_store.write_back(
+                template=new_template, centroid=new_centroid
+            )
+        )
+
+        estimated_full = len(response_text.split()) * 2
+        return {
+            "response": response_text,
+            "cache_hit": False,
+            "intent_id": intent_id,
+            "slots_from_cache": 0,
+            "slots_from_inference": 0,
+            "estimated_full_tokens": estimated_full,
+            "actual_tokens_used": estimated_full,
+            "savings_ratio": 0.0,
+        }
+
     async def query(self, prompt: str) -> Dict:
         """Process a query through the TemplateCache pipeline.
 
-        Always returns a dict with the full response contract. If any stage
-        fails, catches the exception, logs it, and falls back to full
-        generation with cache_hit: False.
+        Splits multi-topic queries into sub-questions, routes each
+        independently (cache hit or LLM miss), and combines results.
+        Always returns a dict with the full response contract.
 
         Args:
             prompt: The user query text.
@@ -118,114 +240,67 @@ class TemplateCache:
         try:
             await self._ensure_seeded()
 
-            # Route query
-            intent_id, variant = self._router.route(prompt)
+            sub_queries = split_multi_query(prompt)
 
-            if intent_id is not None:
-                # Cache hit path
-                template = self._cache_store.get_template(intent_id)
-                if template is not None:
-                    template.hit_count += 1
-                    asyncio.create_task(
-                        self._cache_store.write_back(template=template)
-                    )
+            # Single query — use standard path
+            if len(sub_queries) <= 1:
+                return await self._query_single(prompt)
 
-                    # Detect query aspects not covered by the cached response
-                    gaps = detect_query_gaps(prompt, template.skeleton)
-
-                    try:
-                        response, from_cache, from_inference, stitch_info = (
-                            await self._slot_engine.fill(
-                                template, prompt, gaps=gaps
-                            )
-                        )
-                    except Exception as slot_err:
-                        # If supplement LLM call fails, serve cached part
-                        logger.warning(
-                            "Supplement slot fill failed, serving cached response: %s",
-                            slot_err,
-                        )
-                        response = template.skeleton
-                        from_cache, from_inference = 0, 0
-                        stitch_info = {
-                            "skeleton": template.skeleton,
-                            "slot_fills": {},
-                            "slot_sources": {},
-                            "has_slots": False,
-                            "gaps_detected": gaps,
-                            "supplement_error": str(slot_err),
-                        }
-
-                    if response is not None:
-                        # Estimate tokens
-                        estimated_full = len(response.split()) * 2
-                        actual_used = from_inference * 40  # rough estimate per slot
-                        savings = 1.0 - (actual_used / max(estimated_full, 1))
-                        savings = max(0.0, savings)
-
-                        return {
-                            "response": response,
-                            "cache_hit": True,
-                            "intent_id": intent_id,
-                            "slots_from_cache": from_cache,
-                            "slots_from_inference": from_inference,
-                            "estimated_full_tokens": estimated_full,
-                            "actual_tokens_used": actual_used,
-                            "savings_ratio": savings,
-                            "stitch": stitch_info,
-                        }
-
-            # Cache miss — full LLM generation
-            miss_prompt = f"Answer concisely and directly.\n\n{prompt}"
-            response_text = await llm_call(miss_prompt, max_tokens=512)
-
-            # Extract template for future use
-            skeleton, slots, dep_graph = extract_template(response_text)
-            variant = determine_variant(prompt)
-
-            if intent_id is None:
-                import hashlib
-
-                intent_id = hashlib.sha256(prompt.encode()).hexdigest()[:16]
-
-            from templatecache.models.template import ResponseTemplate
-            from templatecache.models.intent import IntentCentroid
-            from templatecache.utils.embedder import embed
-
-            new_template = ResponseTemplate(
-                intent_id=intent_id,
-                skeleton=skeleton,
-                slots=slots,
-                dependency_graph=dep_graph,
-                variant=variant,
+            # Multi-query — route each sub-question independently
+            logger.info(
+                "Multi-query detected: %d sub-questions from '%s'",
+                len(sub_queries), prompt,
             )
+            sub_results = []
+            for sq in sub_queries:
+                result = await self._query_single(sq)
+                sub_results.append(result)
 
-            query_emb = embed(prompt)
-            new_centroid = IntentCentroid(
-                intent_id=intent_id,
-                centroid_embedding=query_emb,
-                template_id=intent_id,
-                variant=variant,
-                query_count=1,
-            )
+            # Combine results
+            combined_parts = []
+            total_from_cache = 0
+            total_from_inference = 0
+            total_estimated = 0
+            total_actual = 0
+            any_hit = False
+            intent_ids = []
+            sub_stitch = []
 
-            # Async write-back — never block the response path
-            asyncio.create_task(
-                self._cache_store.write_back(
-                    template=new_template, centroid=new_centroid
-                )
-            )
+            for sq, result in zip(sub_queries, sub_results):
+                combined_parts.append(f"**{sq.strip().capitalize()}:** {result['response']}")
+                total_from_cache += result["slots_from_cache"]
+                total_from_inference += result["slots_from_inference"]
+                total_estimated += result["estimated_full_tokens"]
+                total_actual += result["actual_tokens_used"]
+                if result["cache_hit"]:
+                    any_hit = True
+                intent_ids.append(result.get("intent_id"))
+                sub_stitch.append({
+                    "sub_query": sq,
+                    "cache_hit": result["cache_hit"],
+                    "intent_id": result.get("intent_id"),
+                })
 
-            estimated_full = len(response_text.split()) * 2
+            combined_response = "\n\n".join(combined_parts)
+            savings = max(0.0, 1.0 - (total_actual / max(total_estimated, 1)))
+
             return {
-                "response": response_text,
-                "cache_hit": False,
-                "intent_id": intent_id,
-                "slots_from_cache": 0,
-                "slots_from_inference": 0,
-                "estimated_full_tokens": estimated_full,
-                "actual_tokens_used": estimated_full,
-                "savings_ratio": 0.0,
+                "response": combined_response,
+                "cache_hit": any_hit,
+                "intent_id": ", ".join(str(i) for i in intent_ids if i),
+                "slots_from_cache": total_from_cache,
+                "slots_from_inference": total_from_inference,
+                "estimated_full_tokens": total_estimated,
+                "actual_tokens_used": total_actual,
+                "savings_ratio": savings,
+                "stitch": {
+                    "skeleton": combined_response,
+                    "slot_fills": {},
+                    "slot_sources": {},
+                    "has_slots": False,
+                    "multi_query": True,
+                    "sub_results": sub_stitch,
+                },
             }
 
         except Exception as e:
