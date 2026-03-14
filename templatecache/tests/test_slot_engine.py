@@ -173,3 +173,110 @@ class TestDependencyOrder:
         assert order.index("a") < order.index("b")
         assert order.index("b") < order.index("c")
 
+
+
+
+class TestCleanFillValue:
+    """_clean_fill_value strips brackets, quotes, and whitespace."""
+
+    def test_strips_brackets(self, engine):
+        """LLM returning [value] has brackets removed."""
+        assert engine._clean_fill_value("[599]") == "599"
+
+    def test_strips_quotes(self, engine):
+        """LLM returning "value" has quotes removed."""
+        assert engine._clean_fill_value('"hello world"') == "hello world"
+
+    def test_strips_single_quotes(self, engine):
+        """LLM returning 'value' has quotes removed."""
+        assert engine._clean_fill_value("'hello world'") == "hello world"
+
+    def test_strips_whitespace(self, engine):
+        """Leading/trailing whitespace is removed."""
+        assert engine._clean_fill_value("  hello  ") == "hello"
+
+    def test_strips_brackets_and_whitespace(self, engine):
+        """Combined bracket + whitespace stripping."""
+        assert engine._clean_fill_value("  [42]  ") == "42"
+
+    def test_preserves_inner_brackets(self, engine):
+        """Brackets inside the value are preserved."""
+        assert engine._clean_fill_value("array[0]") == "array[0]"
+
+    def test_empty_string(self, engine):
+        """Empty string returns empty."""
+        assert engine._clean_fill_value("") == ""
+
+    def test_no_stripping_needed(self, engine):
+        """Clean value passes through unchanged."""
+        assert engine._clean_fill_value("hello") == "hello"
+
+
+class TestStitchEdgeCases:
+    """_stitch handles edge cases: currency, adjacent punctuation, etc."""
+
+    def test_currency_slots(self, engine):
+        """Slots adjacent to $ signs are replaced correctly."""
+        skeleton = "Price: $[number_0] to $[number_1]"
+        fills = {"number_0": "5.49", "number_1": "5.99"}
+        result = engine._stitch(skeleton, fills)
+        assert result == "Price: $5.49 to $5.99"
+        assert "[" not in result
+
+    def test_bold_markdown_slots(self, engine):
+        """Slots inside markdown bold markers are replaced."""
+        skeleton = "**[name_0]** is great"
+        fills = {"name_0": "Python"}
+        result = engine._stitch(skeleton, fills)
+        assert result == "**Python** is great"
+
+    def test_adjacent_slots(self, engine):
+        """Two slots with no space between them."""
+        skeleton = "[first_0][last_0]"
+        fills = {"first_0": "John", "last_0": "Doe"}
+        result = engine._stitch(skeleton, fills)
+        assert result == "JohnDoe"
+
+    def test_repeated_slot_name(self, engine):
+        """Same slot appearing multiple times in skeleton."""
+        skeleton = "[name_0] likes [name_0]"
+        fills = {"name_0": "Alice"}
+        result = engine._stitch(skeleton, fills)
+        assert result == "Alice likes Alice"
+
+    def test_missing_fill_removed(self, engine):
+        """Unfilled slot markers are removed (safety net)."""
+        skeleton = "Hello [name_0], welcome to [place_0]."
+        fills = {"name_0": "Alice"}  # place_0 missing
+        result = engine._stitch(skeleton, fills)
+        assert result == "Hello Alice, welcome to ."
+        assert "[" not in result
+
+    def test_supplement_slots(self, engine):
+        """Supplement slots (from gap detection) are stitched."""
+        skeleton = "Base response.\n\n[supplement_0]"
+        fills = {"supplement_0": "Additional info here."}
+        result = engine._stitch(skeleton, fills)
+        assert result == "Base response.\n\nAdditional info here."
+
+    def test_slot_in_parentheses(self, engine):
+        """Slot inside parentheses."""
+        skeleton = "([number_0] items)"
+        fills = {"number_0": "42"}
+        result = engine._stitch(skeleton, fills)
+        assert result == "(42 items)"
+
+    def test_slot_with_newlines(self, engine):
+        """Slots across lines."""
+        skeleton = "Line 1: [a_0]\nLine 2: [b_0]"
+        fills = {"a_0": "hello", "b_0": "world"}
+        result = engine._stitch(skeleton, fills)
+        assert result == "Line 1: hello\nLine 2: world"
+
+    def test_no_leftover_markers(self, engine):
+        """No [slot_name] patterns remain after stitching."""
+        skeleton = "[a_0] [b_1] [c_2] [quoted_content_0]"
+        fills = {"a_0": "x", "b_1": "y", "c_2": "z", "quoted_content_0": "w"}
+        result = engine._stitch(skeleton, fills)
+        assert "[" not in result
+        assert "]" not in result

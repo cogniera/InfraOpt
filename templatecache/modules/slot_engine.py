@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import logging
+import re
 from typing import Dict, List, Optional, Tuple
 
 from templatecache.config import (
@@ -88,8 +89,35 @@ class SlotEngine:
             deps = " Context: " + "; ".join(f"{k}={v}" for k, v in filled.items()) + "."
         return (
             f"Q: {query}{deps}\n"
-            f"Fill [{slot_name}]. Reply with ONLY the value, nothing else."
+            f"Fill the slot '{slot_name}'. Reply with ONLY the value, "
+            f"no brackets, no quotes, nothing else."
         )
+
+
+    @staticmethod
+    def _clean_fill_value(value: str) -> str:
+        """Clean an LLM-generated slot fill value.
+
+        Strips whitespace, removes surrounding brackets (LLMs sometimes
+        mimic the [slot_name] format), and removes surrounding quotes.
+
+        Args:
+            value: Raw fill value from the LLM.
+
+        Returns:
+            Cleaned fill value.
+        """
+        v = value.strip()
+        # Remove surrounding brackets: [599] → 599
+        if v.startswith("[") and v.endswith("]"):
+            v = v[1:-1]
+        # Remove surrounding quotes: "hello" → hello
+        if (v.startswith('"') and v.endswith('"')) or (
+            v.startswith("'") and v.endswith("'")
+        ):
+            v = v[1:-1]
+        return v.strip()
+
 
     def _build_supplement_prompt(
         self, query: str, gap: str, existing_response: str
@@ -120,11 +148,15 @@ class SlotEngine:
             fills: Mapping from slot name to fill value.
 
         Returns:
-            Final response string with all markers replaced.
+            Final response string with all markers replaced. Any remaining
+            unreplaced markers are removed to prevent leaking internals.
         """
         result = skeleton
         for slot_name, value in fills.items():
             result = result.replace(f"[{slot_name}]", value)
+        # Safety: remove any remaining [slot_name] markers that weren't
+        # filled (e.g. slot name mismatch, missing fill)
+        result = re.sub(r"\[[a-z_]+\d*\]", "", result)
         return result
 
     async def fill(
@@ -205,7 +237,8 @@ class SlotEngine:
                 continue
             prompt = self._build_slot_prompt(query, slot_name, fills, template)
             fill_value = await llm_call(prompt, max_tokens=80)
-            fills[slot_name] = fill_value.strip()
+            fill_value = self._clean_fill_value(fill_value)
+            fills[slot_name] = fill_value
             slot_sources[slot_name] = "inference"
             slots_from_inference += 1
 

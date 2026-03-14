@@ -72,8 +72,20 @@ def extract_template(response: str) -> Tuple[str, List[str], Dict[str, List[str]
     slots: List[str] = []
     dependency_graph: Dict[str, List[str]] = {}
     slot_counter = 0
+    in_code_block = False
 
     for line in lines:
+        # Track fenced code blocks — don't extract slots from code
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_code_block = not in_code_block
+            skeleton_lines.append(line)
+            continue
+
+        if in_code_block:
+            skeleton_lines.append(line)
+            continue
+
         # Identify segments that look like variable content:
         # - Quoted strings, specific names, numbers, technical terms
         processed_line = line
