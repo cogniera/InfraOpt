@@ -21,6 +21,14 @@ class InferenceRequest(BaseModel):
     max_tokens: Optional[int] = 512
     temperature: Optional[float] = 0.7
 
+class ChatMessage(BaseModel):
+    role: str      # "user" | "assistant"
+    content: str
+
+class ChatRequest(BaseModel):
+    messages: list[ChatMessage]
+    model: Optional[str] = "llama-3-8b"
+
 class OptimizationConfig(BaseModel):
     strategy: str  # "speed", "quality", "balanced"
     batch_size: Optional[int] = 1
@@ -67,6 +75,28 @@ async def run_inference(req: InferenceRequest):
         "tokens_generated": random.randint(50, req.max_tokens),
         "latency_ms": elapsed,
         "tokens_per_second": round(random.uniform(30, 120), 1),
+    }
+
+@app.post("/api/chat")
+async def chat(req: ChatRequest):
+    import asyncio
+    start = time.time()
+    await asyncio.sleep(random.uniform(0.4, 1.2))
+    elapsed = round((time.time() - start) * 1000, 1)
+
+    last = next((m.content for m in reversed(req.messages) if m.role == "user"), "")
+    reply = (
+        f"This is a simulated response from **{req.model}**.\n\n"
+        f"You asked: *\"{last[:80]}{'...' if len(last) > 80 else ''}\"*\n\n"
+        "In a real deployment this would be the model's generated output. "
+        "Connect your preferred inference backend to replace this stub."
+    )
+    return {
+        "role": "assistant",
+        "content": reply,
+        "model": req.model,
+        "tokens": random.randint(40, 220),
+        "latency_ms": elapsed,
     }
 
 @app.post("/api/optimize")

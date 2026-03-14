@@ -2,8 +2,8 @@ import React, { useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { Zap, ArrowRight, Activity, Cpu, TrendingUp } from 'lucide-react';
 
-// ─── Embedding Vector Field Canvas ────────────────────────────────────────────
-function EmbeddingCanvas() {
+// ─── 3D Space Embedding Canvas ────────────────────────────────────────────────
+function SpaceCanvas() {
   const canvasRef = useRef(null);
 
   useEffect(() => {
@@ -11,266 +11,322 @@ function EmbeddingCanvas() {
     const ctx = canvas.getContext('2d');
     let animId;
     let t = 0;
-
     let W = window.innerWidth;
     let H = window.innerHeight;
 
+    // ── Rotation state ─────────────────────────────────────────────────────
+    let rotX = 0.38;   // tilt down slightly so axes visible
+    let rotY = 0;
+    let isDragging = false;
+    let lastMX = 0;
+    let lastMY = 0;
+
+    const onMouseDown = e => { isDragging = true; lastMX = e.clientX; lastMY = e.clientY; };
+    const onMouseUp   = () => { isDragging = false; };
+    const onMouseMove = e => {
+      if (!isDragging) return;
+      rotY += (e.clientX - lastMX) * 0.005;
+      rotX  = Math.max(-0.65, Math.min(0.65, rotX + (e.clientY - lastMY) * 0.003));
+      lastMX = e.clientX;
+      lastMY = e.clientY;
+    };
+    window.addEventListener('mousedown', onMouseDown);
+    window.addEventListener('mouseup',   onMouseUp);
+    window.addEventListener('mousemove', onMouseMove);
+
+    // ── 3-D → screen projection ────────────────────────────────────────────
+    function project(px, py, pz) {
+      // rotate Y
+      const cy = Math.cos(rotY), sy = Math.sin(rotY);
+      const x1 =  px * cy + pz * sy;
+      const z1 = -px * sy + pz * cy;
+      // rotate X
+      const cx = Math.cos(rotX), sx = Math.sin(rotX);
+      const y2 =  py * cx - z1 * sx;
+      const z2 =  py * sx + z1 * cx;
+      // perspective
+      const FOV   = 900;
+      const scale = FOV / (FOV + z2 + 180);
+      return { x: W / 2 + x1 * scale, y: H / 2 + y2 * scale, scale, z: z2 };
+    }
+
+    // ── Canvas resize ──────────────────────────────────────────────────────
+    let bgStars = [];
+    const initBgStars = () => {
+      bgStars = Array.from({ length: 260 }, () => ({
+        x: Math.random() * W,
+        y: Math.random() * H,
+        r: Math.random() * 0.75 + 0.15,
+        a: Math.random() * 0.45 + 0.1,
+        tp: Math.random() * Math.PI * 2,
+        ts: Math.random() * 0.018 + 0.004,
+      }));
+    };
     const resize = () => {
       W = window.innerWidth;
       H = window.innerHeight;
-      canvas.width = W;
+      canvas.width  = W;
       canvas.height = H;
+      initBgStars();
     };
     resize();
     window.addEventListener('resize', resize);
 
-    // ── Smooth flow field angle at (x, y, t) ──────────────────────────────
-    // Combines multiple sine/cosine waves to look like projected high-dim vectors
-    function fieldAngle(x, y) {
-      const nx = x * 0.0022;
-      const ny = y * 0.0022;
-      return (
-        Math.sin(nx + t * 0.22) * Math.cos(ny * 1.4 - t * 0.16) * Math.PI * 1.6 +
-        Math.cos(nx * 0.75 - ny * 0.55 + t * 0.11) * Math.PI * 0.9 +
-        Math.sin(nx * 1.3 + ny * 0.9 + t * 0.07) * Math.PI * 0.45
-      );
-    }
-
-    // ── Embedding clusters (semantic groups) ──────────────────────────────
-    const PALETTE = [
-      [99,  102, 241],  // indigo  — cluster 0
-      [139, 92,  246],  // violet  — cluster 1
-      [6,   182, 212],  // cyan    — cluster 2
-      [16,  185, 129],  // emerald — cluster 3
-      [236, 72,  153],  // pink    — cluster 4
+    // ── Embedding stars (3-D) ──────────────────────────────────────────────
+    const WORD_POOL = [
+      'tree','cats','bats','fire','moon','star','wave','data','node','flux',
+      'beam','glow','code','rust','bold','fast','link','flow','dark','neon',
+      'cube','void','echo','ring','dawn','dusk','rain','snow','mist','dust',
+      'bird','wolf','fish','frog','deer','bull','hawk','lion','bear','crab',
+      'rose','leaf','seed','root','bark','vine','reed','fern','moss','kelp',
+      'gold','iron','salt','sand','lava','coal','jade','opal','ruby','onyx',
     ];
-    const DIM_LABELS = ['ε₀', 'ε₁', 'ε₂', 'ε₃', 'ε₄'];
-    const N_CLUSTERS = PALETTE.length;
 
-    const clusters = Array.from({ length: N_CLUSTERS }, (_, i) => ({
-      x: W * (0.12 + (i / (N_CLUSTERS - 1)) * 0.76),
-      y: H * (0.35 + Math.sin(i * 1.3 + 1) * 0.18),
-      vx: (Math.random() - 0.5) * 0.25,
-      vy: (Math.random() - 0.5) * 0.25,
-      phase: Math.random() * Math.PI * 2,   // for pulsing glow
-      color: PALETTE[i],
-      label: DIM_LABELS[i],
-    }));
+    // Spread evenly on a sphere + some inner ones
+    const STAR_COLORS = [
+      [220, 230, 255],  // blue-white
+      [255, 245, 210],  // yellow-white
+      [200, 220, 255],  // pale blue
+      [255, 210, 190],  // orange-white
+      [210, 255, 220],  // green-white
+      [255, 190, 255],  // pink-white
+      [180, 210, 255],  // ice blue
+    ];
 
-    // ── Particles ─────────────────────────────────────────────────────────
-    const N_PARTICLES = 320;
-
-    function makeParticle(i) {
-      const cluster = i % N_CLUSTERS;
+    const embStars = Array.from({ length: 90 }, () => {
+      const theta = Math.random() * Math.PI * 2;
+      const phi   = Math.acos(2 * Math.random() - 1);
+      const r     = 160 + Math.random() * 340;
       return {
-        x: Math.random() * W,
-        y: Math.random() * H,
-        px: 0, py: 0,       // previous position (for line drawing)
-        vx: 0, vy: 0,
-        speed: Math.random() * 1.0 + 0.5,
-        cluster,
-        life: Math.floor(Math.random() * 180 + 80),
-        maxLife: 260,
-        size: Math.random() * 1.1 + 0.35,
-        fresh: true,        // skip first-frame line draw
+        x:  r * Math.sin(phi) * Math.cos(theta),
+        y:  r * Math.sin(phi) * Math.sin(theta),
+        z:  r * Math.cos(phi),
+        r:  Math.random() * 3.2 + 1.2,
+        brightness: Math.random() * 0.45 + 0.55,
+        color: STAR_COLORS[Math.floor(Math.random() * STAR_COLORS.length)],
+        tp:   Math.random() * Math.PI * 2,
+        ts:   Math.random() * 0.025 + 0.008,
+        word: WORD_POOL[Math.floor(Math.random() * WORD_POOL.length)],
       };
-    }
+    });
 
-    const particles = Array.from({ length: N_PARTICLES }, (_, i) => makeParticle(i));
+    // ── Axes ───────────────────────────────────────────────────────────────
+    const AXIS_LEN = 480;
+    const axes = [
+      { d: [1, 0, 0], color: [99,  102, 241], label: 'dim₀' },  // indigo  X
+      { d: [0, 1, 0], color: [16,  185, 129], label: 'dim₁' },  // emerald Y
+      { d: [0, 0, 1], color: [139,  92, 246], label: 'dim₂' },  // violet  Z
+    ];
 
-    // ── Arrow grid ────────────────────────────────────────────────────────
-    const GRID_STEP = 48;
-    const ARROW_LEN = 11;
+    // ── Sun + word-on-pulse ────────────────────────────────────────────────
+    // Dramatic pulse: ball shrinks to ~35% then bursts back to full size
+    // During the growing phase a 4-letter word fades in then burns away
+    const PULSE_SPEED = 0.5;          // rad/s — full breath every ~12 s
+    const WORDS       = ['EMBD', 'VECT', 'DIMS', 'INFT'];
+    let   pulseCount  = 0;
+    let   prevSinPos  = false;        // was sin positive last frame?
 
-    function drawArrow(x, y, angle, alpha) {
-      const ex = x + Math.cos(angle) * ARROW_LEN;
-      const ey = y + Math.sin(angle) * ARROW_LEN;
-      const HL = 3.5;
-      const HA = 0.45;
+    function drawSun(ox, oy) {
+      const sinVal    = Math.sin(t * PULSE_SPEED);
+      const cosVal    = Math.cos(t * PULSE_SPEED);   // > 0 while sin is rising
+      const sinPos    = sinVal > 0;
 
+      // Count pulses (rising zero-cross = new word)
+      if (sinPos && !prevSinPos) pulseCount++;
+      prevSinPos = sinPos;
+
+      // pulse: 0.32 (small) → 1.0 (full)
+      const pulse = 0.32 + 0.68 * ((sinVal + 1) / 2);
+      const coreR = 34 * pulse;
+
+      // ── Word alpha ────────────────────────────────────────────────────
+      // Show when growing (cosVal > 0) and ball is still on the small side
+      // Fade in from sinVal=-0.6, peak near sinVal=0, fade out by sinVal=0.75
+      const isGrowing = cosVal > 0;
+      let wordAlpha = 0;
+      if (isGrowing) {
+        const progress = (sinVal + 1) / 2;            // 0 (small) → 1 (big)
+        // bell curve: rises 0→0.45, peaks ~0.45, gone by 0.85
+        wordAlpha = Math.max(0, Math.sin(progress * Math.PI * 1.15)) * 0.92;
+      }
+
+      // ── Corona layers ─────────────────────────────────────────────────
+      const layers = [
+        { r: coreR * 15, rgba: [255, 200,  80, 0.022] },
+        { r: coreR * 10, rgba: [255, 180,  50, 0.048] },
+        { r: coreR *  6, rgba: [255, 160,  30, 0.09 ] },
+        { r: coreR *  3.5, rgba: [255, 220, 110, 0.18] },
+        { r: coreR *  2, rgba: [255, 240, 160, 0.32 ] },
+      ];
+      for (const { r, rgba: [r_, g, b, a] } of layers) {
+        const g2 = ctx.createRadialGradient(ox, oy, 0, ox, oy, r);
+        g2.addColorStop(0, `rgba(${r_},${g},${b},${a})`);
+        g2.addColorStop(1, `rgba(${r_},${g},${b},0)`);
+        ctx.fillStyle = g2;
+        ctx.beginPath();
+        ctx.arc(ox, oy, r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // ── Core disc ─────────────────────────────────────────────────────
+      const cg = ctx.createRadialGradient(ox, oy, 0, ox, oy, coreR);
+      cg.addColorStop(0,    'rgba(255,255,245,1)');
+      cg.addColorStop(0.25, 'rgba(255,245,160,0.97)');
+      cg.addColorStop(0.6,  'rgba(255,180, 60,0.85)');
+      cg.addColorStop(1,    'rgba(255,100, 10,0)');
+      ctx.fillStyle = cg;
       ctx.beginPath();
-      ctx.moveTo(x - Math.cos(angle) * 3, y - Math.sin(angle) * 3); // small tail
-      ctx.lineTo(ex, ey);
-      ctx.moveTo(ex, ey);
-      ctx.lineTo(ex - HL * Math.cos(angle - HA), ey - HL * Math.sin(angle - HA));
-      ctx.moveTo(ex, ey);
-      ctx.lineTo(ex - HL * Math.cos(angle + HA), ey - HL * Math.sin(angle + HA));
-      ctx.strokeStyle = `rgba(129, 140, 248, ${alpha})`;
-      ctx.lineWidth = 0.55;
-      ctx.stroke();
+      ctx.arc(ox, oy, coreR, 0, Math.PI * 2);
+      ctx.fill();
+
+      // ── 4-letter word burned into the expanding ball ───────────────────
+      if (wordAlpha > 0.01) {
+        const word     = WORDS[pulseCount % WORDS.length];
+        const fontSize = Math.max(10, coreR * 0.72);
+        ctx.save();
+        ctx.font         = `900 ${fontSize}px "JetBrains Mono", monospace`;
+        ctx.textAlign    = 'center';
+        ctx.textBaseline = 'middle';
+        // Dark core text so it pops against the bright sun
+        ctx.fillStyle = `rgba(40, 10, 80, ${wordAlpha})`;
+        ctx.fillText(word, ox, oy);
+        // Thin bright outline so it's legible at small sizes too
+        ctx.strokeStyle = `rgba(255, 240, 180, ${wordAlpha * 0.35})`;
+        ctx.lineWidth   = 0.6;
+        ctx.strokeText(word, ox, oy);
+        ctx.restore();
+      }
     }
 
-    // ── Projection axis lines (faint orthogonal grid) ─────────────────────
-    function drawAxes() {
-      ctx.save();
-      ctx.setLineDash([2, 18]);
-      ctx.lineWidth = 0.4;
-      // Horizontal lines every ~15% height
-      for (let frac = 0.15; frac <= 0.85; frac += 0.15) {
-        ctx.beginPath();
-        ctx.moveTo(0, H * frac);
-        ctx.lineTo(W, H * frac);
-        ctx.strokeStyle = 'rgba(99, 102, 241, 0.045)';
-        ctx.stroke();
-      }
-      // Vertical lines every ~15% width
-      for (let frac = 0.15; frac <= 0.85; frac += 0.15) {
-        ctx.beginPath();
-        ctx.moveTo(W * frac, 0);
-        ctx.lineTo(W * frac, H);
-        ctx.strokeStyle = 'rgba(139, 92, 246, 0.04)';
-        ctx.stroke();
-      }
-      ctx.setLineDash([]);
-      ctx.restore();
-    }
-
-    // Mouse influence
-    const mouse = { x: -9999, y: -9999 };
-    const onMouseMove = e => { mouse.x = e.clientX; mouse.y = e.clientY; };
-    window.addEventListener('mousemove', onMouseMove);
-
-    // ── Main render loop ──────────────────────────────────────────────────
+    // ── Render ─────────────────────────────────────────────────────────────
     function draw() {
-      t += 0.007;
+      t += 0.008;
+      if (!isDragging) rotY += 0.0028;
 
-      // Persist trails — semi-transparent dark wash instead of clearRect
-      ctx.fillStyle = 'rgba(8, 12, 20, 0.10)';
+      // Deep space background
+      ctx.fillStyle = '#050810';
       ctx.fillRect(0, 0, W, H);
 
-      // 1. Faint projection axes
-      drawAxes();
-
-      // 2. Vector field arrows
-      const cols = Math.ceil(W / GRID_STEP) + 1;
-      const rows = Math.ceil(H / GRID_STEP) + 1;
-      for (let r = 0; r < rows; r++) {
-        for (let c = 0; c < cols; c++) {
-          const ax = c * GRID_STEP + GRID_STEP / 2;
-          const ay = r * GRID_STEP + GRID_STEP / 2;
-          const angle = fieldAngle(ax, ay);
-          // Fade arrows near mouse
-          const mdx = ax - mouse.x;
-          const mdy = ay - mouse.y;
-          const md = Math.sqrt(mdx * mdx + mdy * mdy);
-          const alpha = md < 130 ? 0.03 + (md / 130) * 0.055 : 0.07;
-          drawArrow(ax, ay, angle, alpha);
-        }
+      // 1. Background star field
+      for (const s of bgStars) {
+        s.tp += s.ts;
+        const alpha = s.a + 0.12 * Math.sin(s.tp);
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(210, 225, 255, ${alpha})`;
+        ctx.fill();
       }
 
-      // 3. Cluster centroids — pulsing glows + labels
-      for (const cl of clusters) {
-        cl.x += cl.vx;
-        cl.y += cl.vy;
-        if (cl.x < 60 || cl.x > W - 60) cl.vx *= -1;
-        if (cl.y < 60 || cl.y > H - 60) cl.vy *= -1;
+      const o = project(0, 0, 0);
 
-        const pulse = 0.12 + 0.06 * Math.sin(t * 1.8 + cl.phase);
-        const outerR = 70 + 14 * Math.sin(t * 1.4 + cl.phase);
-        const [r, g, b] = cl.color;
+      // 2. Axes (gradient, ticks, labels)
+      for (const ax of axes) {
+        const [dx, dy, dz] = ax.d;
+        const [r, g, b]    = ax.color;
+        const neg = project(-dx * AXIS_LEN, -dy * AXIS_LEN, -dz * AXIS_LEN);
+        const pos = project( dx * AXIS_LEN,  dy * AXIS_LEN,  dz * AXIS_LEN);
 
-        // Outer glow
-        const grad = ctx.createRadialGradient(cl.x, cl.y, 0, cl.x, cl.y, outerR);
-        grad.addColorStop(0, `rgba(${r},${g},${b},${pulse})`);
-        grad.addColorStop(0.4, `rgba(${r},${g},${b},${pulse * 0.4})`);
-        grad.addColorStop(1, `rgba(${r},${g},${b},0)`);
-        ctx.fillStyle = grad;
+        // Axis line with gradient brightness
+        const axGr = ctx.createLinearGradient(neg.x, neg.y, pos.x, pos.y);
+        axGr.addColorStop(0,   `rgba(${r},${g},${b},0.06)`);
+        axGr.addColorStop(0.5, `rgba(${r},${g},${b},0.65)`);
+        axGr.addColorStop(1,   `rgba(${r},${g},${b},0.06)`);
         ctx.beginPath();
-        ctx.arc(cl.x, cl.y, outerR, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.moveTo(neg.x, neg.y);
+        ctx.lineTo(pos.x, pos.y);
+        ctx.strokeStyle = axGr;
+        ctx.lineWidth = 1.3;
+        ctx.stroke();
 
-        // Core dot
-        ctx.beginPath();
-        ctx.arc(cl.x, cl.y, 3.5, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(${r},${g},${b},0.95)`;
-        ctx.fill();
-
-        // Dimension label
-        ctx.font = '500 11px "JetBrains Mono", monospace';
-        ctx.fillStyle = `rgba(${r},${g},${b},0.55)`;
-        ctx.fillText(cl.label, cl.x + 8, cl.y - 8);
-      }
-
-      // 4. Particles flowing through the field
-      for (let i = 0; i < particles.length; i++) {
-        const p = particles[i];
-        p.life--;
-
-        const oob = p.x < -10 || p.x > W + 10 || p.y < -10 || p.y > H + 10;
-        if (p.life <= 0 || oob) {
-          particles[i] = makeParticle(i);
-          continue;
-        }
-
-        p.px = p.x;
-        p.py = p.y;
-
-        // Flow field force
-        const angle = fieldAngle(p.x, p.y);
-        p.vx += Math.cos(angle) * 0.09;
-        p.vy += Math.sin(angle) * 0.09;
-
-        // Gentle pull toward own cluster centroid
-        const cl = clusters[p.cluster];
-        const cdx = cl.x - p.x;
-        const cdy = cl.y - p.y;
-        const cd = Math.sqrt(cdx * cdx + cdy * cdy);
-        if (cd > 80) {
-          p.vx += (cdx / cd) * 0.025;
-          p.vy += (cdy / cd) * 0.025;
-        }
-
-        // Mouse repulsion / warp
-        const mdx = p.x - mouse.x;
-        const mdy = p.y - mouse.y;
-        const md = Math.sqrt(mdx * mdx + mdy * mdy);
-        if (md < 160) {
-          const force = (1 - md / 160) * 1.1;
-          p.vx += (mdx / md) * force;
-          p.vy += (mdy / md) * force;
-        }
-
-        // Speed cap + damping
-        const spd = Math.sqrt(p.vx * p.vx + p.vy * p.vy);
-        const maxSpd = p.speed * 2.2;
-        if (spd > maxSpd) { p.vx = (p.vx / spd) * maxSpd; p.vy = (p.vy / spd) * maxSpd; }
-        p.vx *= 0.91;
-        p.vy *= 0.91;
-
-        p.x += p.vx;
-        p.y += p.vy;
-
-        const lifeRatio = p.life / p.maxLife;
-        const alpha = Math.min(lifeRatio * 4, 1) * 0.75;
-        const [r, g, b] = PALETTE[p.cluster];
-
-        if (!p.fresh) {
-          // Draw line segment (trail)
+        // Tick dots along positive arm
+        for (let k = 1; k <= 4; k++) {
+          const f  = k / 4;
+          const tp = project(dx * AXIS_LEN * f, dy * AXIS_LEN * f, dz * AXIS_LEN * f);
           ctx.beginPath();
-          ctx.moveTo(p.px, p.py);
-          ctx.lineTo(p.x, p.y);
-          ctx.strokeStyle = `rgba(${r},${g},${b},${alpha})`;
-          ctx.lineWidth = p.size;
-          ctx.stroke();
+          ctx.arc(tp.x, tp.y, 2, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(${r},${g},${b},0.45)`;
+          ctx.fill();
         }
 
-        // Head dot (brighter)
+        // Label
+        ctx.font = 'bold 12px "JetBrains Mono", monospace';
+        ctx.fillStyle = `rgba(${r},${g},${b},0.85)`;
+        ctx.fillText(ax.label, pos.x + 7, pos.y + 4);
+      }
+
+      // 3. Light beams — sun → each embedding star
+      for (const s of embStars) {
+        const sp = project(s.x, s.y, s.z);
+        const [r, g, b] = s.color;
+
+        const beamGr = ctx.createLinearGradient(o.x, o.y, sp.x, sp.y);
+        beamGr.addColorStop(0,    'rgba(255, 230, 120, 0.22)');
+        beamGr.addColorStop(0.25, `rgba(${r},${g},${b},0.10)`);
+        beamGr.addColorStop(1,    `rgba(${r},${g},${b},0.0)`);
+
         ctx.beginPath();
-        ctx.arc(p.x, p.y, p.size * 1.4, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(${r},${g},${b},${alpha * 0.9})`;
+        ctx.moveTo(o.x, o.y);
+        ctx.lineTo(sp.x, sp.y);
+        ctx.strokeStyle = beamGr;
+        ctx.lineWidth   = 0.65;
+        ctx.stroke();
+      }
+
+      // 4. Embedding stars — back-to-front depth sort
+      const sorted = embStars
+        .map(s => ({ s, p: project(s.x, s.y, s.z) }))
+        .sort((a, b) => b.p.z - a.p.z);
+
+      for (const { s, p } of sorted) {
+        s.tp += s.ts;
+        const twinkle = 1 + 0.28 * Math.sin(s.tp);
+        const gr3d    = s.r * p.scale * twinkle * 5;
+        const alpha   = s.brightness * (0.65 + 0.35 * p.scale);
+        const [r, g, b] = s.color;
+
+        // Glow halo
+        const sg = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, gr3d * 2.8);
+        sg.addColorStop(0,   `rgba(${r},${g},${b},${alpha * 0.85})`);
+        sg.addColorStop(0.45,`rgba(${r},${g},${b},${alpha * 0.25})`);
+        sg.addColorStop(1,   `rgba(${r},${g},${b},0)`);
+        ctx.fillStyle = sg;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, gr3d * 2.8, 0, Math.PI * 2);
         ctx.fill();
 
-        p.fresh = false;
+        // Core
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, Math.max(0.8, gr3d * 0.7), 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(${r},${g},${b},${Math.min(1, alpha * 1.3)})`;
+        ctx.fill();
+
+        // Word at peak twinkle — sinVal near 1.0
+        const sinVal  = Math.sin(s.tp);
+        const wordAlpha = Math.max(0, (sinVal - 0.55) / 0.45) * alpha;
+        if (wordAlpha > 0.01) {
+          const fontSize = Math.max(8, gr3d * 1.1);
+          ctx.save();
+          ctx.font         = `700 ${fontSize}px "JetBrains Mono", monospace`;
+          ctx.textAlign    = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillStyle    = `rgba(${r},${g},${b},${wordAlpha})`;
+          ctx.fillText(s.word, p.x, p.y - gr3d * 2.2);
+          ctx.restore();
+        }
       }
+
+      // 5. Sun always on top
+      drawSun(o.x, o.y);
 
       animId = requestAnimationFrame(draw);
     }
-
     draw();
 
     return () => {
       cancelAnimationFrame(animId);
-      window.removeEventListener('resize', resize);
+      window.removeEventListener('resize',    resize);
+      window.removeEventListener('mousedown', onMouseDown);
+      window.removeEventListener('mouseup',   onMouseUp);
       window.removeEventListener('mousemove', onMouseMove);
     };
   }, []);
@@ -278,34 +334,35 @@ function EmbeddingCanvas() {
   return (
     <canvas
       ref={canvasRef}
-      style={{ position: 'fixed', inset: 0, zIndex: 0, pointerEvents: 'none' }}
+      style={{ position: 'fixed', inset: 0, zIndex: 0, cursor: 'grab' }}
     />
   );
 }
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 const FEATURES = [
-  { icon: Activity, label: 'Real-time Metrics',   desc: 'Live latency and throughput monitoring' },
-  { icon: Cpu,      label: 'Multi-Model Support', desc: 'Llama, Mistral, Phi, Gemma and more'   },
-  { icon: TrendingUp, label: 'Smart Optimization', desc: 'Speed, quality, and balanced strategies' },
+  { icon: Activity,    label: 'Real-time Metrics',   desc: 'Live latency and throughput monitoring'  },
+  { icon: Cpu,         label: 'Multi-Model Support', desc: 'Llama, Mistral, Phi, Gemma and more'    },
+  { icon: TrendingUp,  label: 'Smart Optimization',  desc: 'Speed, quality, and balanced strategies' },
 ];
 
 export default function Landing({ onEnter }) {
   return (
-    <div style={{ minHeight: '100vh', position: 'relative', overflow: 'hidden', background: '#080c14' }}>
+    <div style={{ minHeight: '100vh', position: 'relative', overflow: 'hidden', background: '#050810', userSelect: 'none' }}>
 
-      {/* Vector embedding field */}
-      <EmbeddingCanvas />
+      <SpaceCanvas />
 
-      {/* Soft center radial glow */}
+      {/* Subtle dark vignette so text is readable over bright sun */}
       <div style={{
-        position: 'fixed', inset: 0, zIndex: 0, pointerEvents: 'none',
-        background: 'radial-gradient(ellipse 55% 45% at 50% 42%, rgba(99,102,241,0.10) 0%, transparent 70%)',
+        position: 'fixed', inset: 0, zIndex: 1, pointerEvents: 'none',
+        background: [
+          'radial-gradient(ellipse 70% 60% at 50% 50%, transparent 30%, rgba(5,8,16,0.55) 100%)',
+        ].join(','),
       }} />
 
       {/* ── Nav ── */}
       <nav style={{
-        position: 'relative', zIndex: 2,
+        position: 'relative', zIndex: 3,
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         padding: '28px 48px',
       }}>
@@ -322,21 +379,27 @@ export default function Landing({ onEnter }) {
             infer<span style={{ color: '#818cf8' }}>Opt</span>
           </span>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <div style={{ width: 7, height: 7, borderRadius: '50%', background: '#10b981', boxShadow: '0 0 8px #10b981' }} />
-          <span style={{ fontSize: 12, color: '#475569', fontFamily: 'JetBrains Mono, monospace' }}>
-            All systems operational
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+          {/* drag hint */}
+          <span style={{ fontSize: 11, color: '#334155', fontFamily: 'JetBrains Mono, monospace' }}>
+            drag to rotate
           </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div style={{ width: 7, height: 7, borderRadius: '50%', background: '#10b981', boxShadow: '0 0 8px #10b981' }} />
+            <span style={{ fontSize: 12, color: '#475569', fontFamily: 'JetBrains Mono, monospace' }}>
+              All systems operational
+            </span>
+          </div>
         </div>
       </nav>
 
       {/* ── Hero ── */}
       <div style={{
-        position: 'relative', zIndex: 2,
+        position: 'relative', zIndex: 3,
         display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center',
         padding: '72px 24px 56px',
       }}>
-
         {/* Badge */}
         <motion.div
           initial={{ opacity: 0, y: -10 }}
@@ -344,8 +407,8 @@ export default function Landing({ onEnter }) {
           transition={{ duration: 0.5 }}
           style={{
             display: 'inline-flex', alignItems: 'center', gap: 8,
-            background: 'rgba(99,102,241,0.1)',
-            border: '1px solid rgba(99,102,241,0.25)',
+            background: 'rgba(99,102,241,0.12)',
+            border: '1px solid rgba(99,102,241,0.28)',
             borderRadius: 100, padding: '6px 16px',
             fontSize: 12, color: '#818cf8', fontWeight: 500, marginBottom: 32,
           }}
@@ -386,7 +449,7 @@ export default function Landing({ onEnter }) {
           initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
           transition={{ duration: 0.4, delay: 0.3 }}
-          whileHover={{ scale: 1.04, boxShadow: '0 0 44px rgba(99,102,241,0.6)' }}
+          whileHover={{ scale: 1.04, boxShadow: '0 0 44px rgba(99,102,241,0.65)' }}
           whileTap={{ scale: 0.97 }}
           onClick={onEnter}
           style={{
@@ -394,7 +457,7 @@ export default function Landing({ onEnter }) {
             background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
             border: 'none', borderRadius: 12, padding: '16px 32px',
             color: 'white', fontWeight: 600, fontSize: 16, cursor: 'pointer',
-            boxShadow: '0 0 28px rgba(99,102,241,0.4)', transition: 'box-shadow 0.2s',
+            boxShadow: '0 0 28px rgba(99,102,241,0.45)', transition: 'box-shadow 0.2s',
           }}
         >
           Launch Dashboard
@@ -420,7 +483,7 @@ export default function Landing({ onEnter }) {
 
       {/* ── Feature cards ── */}
       <div style={{
-        position: 'relative', zIndex: 2,
+        position: 'relative', zIndex: 3,
         display: 'flex', justifyContent: 'center', gap: 16,
         padding: '0 48px 80px', flexWrap: 'wrap',
       }}>
@@ -431,7 +494,7 @@ export default function Landing({ onEnter }) {
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.4 + i * 0.1, duration: 0.4 }}
             style={{
-              background: 'rgba(255,255,255,0.04)', backdropFilter: 'blur(12px)',
+              background: 'rgba(5,8,16,0.6)', backdropFilter: 'blur(16px)',
               border: '1px solid rgba(255,255,255,0.07)',
               borderRadius: 16, padding: '28px', width: 240, textAlign: 'left',
             }}
@@ -451,8 +514,8 @@ export default function Landing({ onEnter }) {
 
       {/* Bottom fade */}
       <div style={{
-        position: 'fixed', bottom: 0, left: 0, right: 0, height: 130, zIndex: 1, pointerEvents: 'none',
-        background: 'linear-gradient(to top, #080c14 20%, transparent)',
+        position: 'fixed', bottom: 0, left: 0, right: 0, height: 100, zIndex: 2, pointerEvents: 'none',
+        background: 'linear-gradient(to top, #050810 20%, transparent)',
       }} />
     </div>
   );
