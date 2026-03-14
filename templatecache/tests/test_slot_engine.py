@@ -125,7 +125,11 @@ class TestFallbackOnHighUncertainRatio:
     @pytest.mark.asyncio
     @patch("templatecache.modules.slot_engine.llm_call", new_callable=AsyncMock)
     async def test_fallback_when_too_many_uncertain(self, mock_llm, engine, mock_cache_store):
-        """Returns None when uncertain ratio exceeds UNCERTAIN_SLOT_FALLBACK_RATIO."""
+        """Returns None when uncertain ratio exceeds UNCERTAIN_SLOT_FALLBACK_RATIO.
+
+        Uses a mix of confident and uncertain slots (not all uncertain,
+        since all-uncertain is treated as a new template and filled).
+        """
         template = ResponseTemplate(
             intent_id="test",
             skeleton="[a] [b] [c] [d]",
@@ -133,8 +137,18 @@ class TestFallbackOnHighUncertainRatio:
             dependency_graph={"a": [], "b": [], "c": [], "d": []},
             variant="detailed",
         )
-        # All slots return None (uncertain) → ratio = 4/4 = 1.0 > 0.5
-        mock_cache_store.get_slot_confidence.return_value = None
+        # 1 confident + 3 uncertain → ratio = 3/4 = 0.75 > 0.5
+        confident_record = MagicMock()
+        confident_record.similarity_score = 0.95
+        confident_record.fill_value = "cached_a"
+        confident_record.fill_embedding = [0.1] * 384
+
+        def side_effect(slot_id, context_hash):
+            if slot_id == "a":
+                return confident_record
+            return None
+
+        mock_cache_store.get_slot_confidence.side_effect = side_effect
 
         response, from_cache, from_inference, stitch_info = await engine.fill(template, "test query")
         assert response is None

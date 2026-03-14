@@ -242,6 +242,17 @@ class ClusterRouter:
                 variant = "detailed"
             return best_centroid.intent_id, variant, best_cluster_label
 
+        # Cluster search missed — fall back to full scan in case the
+        # centroid is in a cluster we didn't check (e.g. newly added)
+        all_centroids = list(self._centroid_map.values())
+        if all_centroids:
+            result = self._flat_scan(query, query_embedding, all_centroids)
+            if result[0] is not None:
+                logger.info(
+                    "Cluster miss but flat scan hit: %s", result[0]
+                )
+            return result
+
         return None, None, None
 
     def _flat_scan(

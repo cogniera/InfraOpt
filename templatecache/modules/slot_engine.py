@@ -179,11 +179,17 @@ class SlotEngine:
             else:
                 uncertain_slots.append(slot_name)
 
-        # Phase 2: Check fallback ratio — only applies when there are
-        # enough slots for the ratio to be meaningful (3+). Templates with
-        # 1-2 slots should always attempt to fill them.
+        # Phase 2: Check fallback ratio — abort template filling if too
+        # many slots are uncertain, UNLESS all slots are uncertain (new
+        # template, first hit). In that case, fill them all — they were
+        # just extracted from this context.
         total = len(ordered_slots)
-        if total >= 3 and len(uncertain_slots) / total > UNCERTAIN_SLOT_FALLBACK_RATIO:
+        all_uncertain = len(uncertain_slots) == total
+        if (
+            not all_uncertain
+            and total >= 3
+            and len(uncertain_slots) / total > UNCERTAIN_SLOT_FALLBACK_RATIO
+        ):
             logger.info(
                 "Uncertain ratio %.2f exceeds threshold, falling back to full generation",
                 len(uncertain_slots) / total,
