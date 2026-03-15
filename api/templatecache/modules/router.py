@@ -96,20 +96,23 @@ class IntentRouter:
                 intent_groups[iid] = []
             intent_groups[iid].append(ex)
 
-        for intent_id, group in intent_groups.items():
+        import numpy as np
+
+        total = len(intent_groups)
+        for i, (intent_id, group) in enumerate(intent_groups.items(), 1):
             # Embed all queries in this group
             queries = [ex["query"] for ex in group]
             embeddings = batch_embed(queries)
 
             # Compute centroid as average embedding
-            import numpy as np
-
             centroid_vec = np.mean(embeddings, axis=0).tolist()
 
             # Use first example to build template
             first_response = group[0]["response"]
             variant = determine_variant(group[0]["query"])
-            skeleton, slots, dep_graph = extract_template(first_response)
+            skeleton, slots, dep_graph, _slot_types, templateable = extract_template(
+                first_response
+            )
 
             template = ResponseTemplate(
                 intent_id=intent_id,
@@ -117,6 +120,8 @@ class IntentRouter:
                 slots=slots,
                 dependency_graph=dep_graph,
                 variant=variant,
+                templateable=templateable,
+                raw_response=first_response if not templateable else "",
             )
 
             centroid = IntentCentroid(
@@ -129,5 +134,9 @@ class IntentRouter:
 
             await self._cache_store.write_back(template=template, centroid=centroid)
 
-        logger.info("Seeded %d intent centroids", len(intent_groups))
+            # Progress logging every 25 intents or on the last one
+            if i % 25 == 0 or i == total:
+                print(f"  Seeded {i}/{total} intents...", flush=True)
+
+        logger.info("Seeded %d intent centroids", total)
 

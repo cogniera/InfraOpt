@@ -4,13 +4,17 @@ import asyncio
 import logging
 from typing import Dict, List
 
+import templatecache.config as config
 from templatecache.modules.cache_store import CacheStore
 from templatecache.modules.cluster_router import ClusterRouter
+from templatecache.modules.gap_learner import GapLearner
 from templatecache.modules.router import IntentRouter
 from templatecache.modules.slot_engine import SlotEngine
 from templatecache.utils.extractor import (
+    _format_compound_list_response,
     detect_query_gaps,
     determine_variant,
+    extract_specific_answer,
     extract_template,
     split_multi_query,
 )
@@ -78,12 +82,18 @@ class TemplateCache:
     drop-in caching primitive.
     """
 
-    def __init__(self) -> None:
-        """Initialize TemplateCache with all sub-modules."""
+    def __init__(self, savings_log=None) -> None:
+        """Initialize TemplateCache with all sub-modules.
+
+        Args:
+            savings_log: Optional SavingsLog for recording promotion events.
+        """
         self._cache_store = CacheStore()
         self._router = IntentRouter(self._cache_store)
-        self._cluster_router = ClusterRouter()
+        self._cluster_router = ClusterRouter(cache_store=self._cache_store)
         self._slot_engine = SlotEngine(self._cache_store)
+        self._gap_learner = GapLearner(self._cache_store, savings_log=savings_log)
+        self._savings_log = savings_log
         self._seeded = False
 
     async def _ensure_seeded(self) -> None:
@@ -239,6 +249,40 @@ class TemplateCache:
                     self._cache_store.write_back(template=template)
                 )
 
+                # Templateable check — serve raw_response directly for
+                # non-templateable responses (e.g. code-heavy). Skips
+                # gap detection, slot filling, and answer extraction.
+                if not getattr(template, "templateable", True):
+                    if template.raw_response:
+                        estimated_full = len(template.raw_response.split()) * 2
+                        return {
+                            "response": template.raw_response,
+                            "cache_hit": True,
+                            "intent_id": intent_id,
+                            "slots_from_cache": 0,
+                            "slots_from_inference": 0,
+                            "slots_from_transfer": 0,
+                            "slots_from_blend": 0,
+                            "estimated_full_tokens": estimated_full,
+                            "actual_tokens_used": 0,
+                            "savings_ratio": 1.0,
+                            "stitch": {
+                                "skeleton": "",
+                                "slot_fills": {},
+                                "slot_sources": {},
+                                "has_slots": False,
+                                "gaps_detected": None,
+                                "slots_promoted": [],
+                                "blend_candidates": {},
+                                "answer_extracted": False,
+                                "compound_formatted": False,
+                                "multi_query": False,
+                                "sub_results": [],
+                                "templateable": False,
+                                "served_from": "raw_response",
+                            },
+                        }
+
                 # Detect query aspects not covered by the cached response
                 gaps = detect_query_gaps(prompt, template.skeleton)
 
@@ -265,6 +309,25 @@ class TemplateCache:
                     }
 
                 if response is not None:
+                    # Answer extraction: if query asks for a specific
+                    # item and the template is a list variant, extract
+                    # just the relevant item.
+                    if config.ANSWER_EXTRACTION_ENABLED:
+                        # Try compound formatting first (works on any variant
+                        # — handles "what is X then list the rest" patterns)
+                        compound_formatted = _format_compound_list_response(prompt, response)
+                        if compound_formatted is not None:
+                            stitch_info["answer_extracted"] = True
+                            stitch_info["compound_formatted"] = True
+                            stitch_info["full_list_response"] = response
+                            response = compound_formatted
+                        elif template.variant == "list":
+                            extracted = extract_specific_answer(prompt, response)
+                            if extracted is not None:
+                                stitch_info["answer_extracted"] = True
+                                stitch_info["full_list_response"] = response
+                                response = extracted
+
                     estimated_full = len(response.split()) * 2
                     actual_used = from_inference * 40
                     savings = max(0.0, 1.0 - (actual_used / max(estimated_full, 1)))
@@ -272,12 +335,26 @@ class TemplateCache:
                     if cluster_label:
                         stitch_info["cluster"] = cluster_label
 
+                    # Gap pattern learning: record gaps and check promotions
+                    slots_promoted: list = []
+                    gaps = stitch_info.get("gaps_detected", [])
+                    if gaps and intent_id:
+                        for gap_aspect in gaps:
+                            gap_type = self._gap_learner.classify_gap(gap_aspect)
+                            self._gap_learner.store_gap(intent_id, gap_type, gap_aspect)
+                        promoted = self._gap_learner.check_promotion(intent_id)
+                        if promoted:
+                            slots_promoted = promoted
+                    stitch_info["slots_promoted"] = slots_promoted
+
                     return {
                         "response": response,
                         "cache_hit": True,
                         "intent_id": intent_id,
                         "slots_from_cache": from_cache,
                         "slots_from_inference": from_inference,
+                        "slots_from_transfer": stitch_info.get("slots_from_transfer", 0),
+                        "slots_from_blend": stitch_info.get("slots_from_blend", 0),
                         "estimated_full_tokens": estimated_full,
                         "actual_tokens_used": actual_used,
                         "savings_ratio": savings,
@@ -289,7 +366,9 @@ class TemplateCache:
         response_text = await llm_call(miss_prompt, max_tokens=512)
 
         # Extract template for future use
-        skeleton, slots, dep_graph = extract_template(response_text)
+        skeleton, slots, dep_graph, _slot_types, templateable = extract_template(
+            response_text
+        )
         variant = determine_variant(prompt)
 
         if intent_id is None:
@@ -306,6 +385,8 @@ class TemplateCache:
             slots=slots,
             dependency_graph=dep_graph,
             variant=variant,
+            templateable=templateable,
+            raw_response=response_text if not templateable else "",
         )
 
         query_emb = embed(prompt)

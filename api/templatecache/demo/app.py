@@ -20,8 +20,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-_cache = TemplateCache()
 _log = SavingsLog()
+_cache = TemplateCache(savings_log=_log)
 _FRONTEND_PATH = Path(__file__).parent / "frontend.html"
 
 
