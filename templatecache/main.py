@@ -310,7 +310,9 @@ class TemplateCache:
         response_text = await llm_call(miss_prompt, max_tokens=512)
 
         # Extract template for future use
-        skeleton, slots, dep_graph, _slot_types = extract_template(response_text)
+        skeleton, slots, dep_graph, _slot_types, templateable = extract_template(
+            response_text
+        )
         variant = determine_variant(prompt)
 
         if intent_id is None:
@@ -327,6 +329,8 @@ class TemplateCache:
             slots=slots,
             dependency_graph=dep_graph,
             variant=variant,
+            templateable=templateable,
+            raw_response=response_text if not templateable else "",
         )
 
         query_emb = embed(prompt)

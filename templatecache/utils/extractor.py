@@ -17,28 +17,50 @@ _PERCENTAGE_RE = re.compile(r"^[\d.]+%$")
 _NUMERIC_RE = re.compile(r"^[\d,.]+$")
 _NAMED_ENTITY_RE = re.compile(r"^[A-Z][a-z]+(?: [A-Z][a-z]+)+$")
 
+# Duration patterns — time spans like "5-7 business days", "within 24 hours"
+_DURATION_RE_RANGE = re.compile(
+    r"\d+[-–]\d+\s*(days?|hours?|weeks?|months?|business\s+days?|working\s+days?)",
+    re.IGNORECASE,
+)
+_DURATION_RE_WITHIN = re.compile(
+    r"within\s+\d+\s*(days?|hours?|weeks?|months?)", re.IGNORECASE
+)
+_DURATION_RE_BUSINESS = re.compile(
+    r"\d+\s*(business\s+days?|working\s+days?)", re.IGNORECASE
+)
+
+# Maximum number of slots to extract from a single response
+_MAX_SLOT_COUNT = 6
+
 
 def classify_slot(value: str) -> str:
     """Classify a slot fill value into a semantic type.
 
     Classification order (first match wins):
-    1. currency — dollar signs or currency codes
-    2. date — date patterns (YYYY-MM-DD, MM/DD/YYYY, etc.)
-    3. percentage — number followed by %
-    4. named_entity — two or more capitalized words (proper nouns)
-    5. numeric — plain numbers with optional commas/decimals
-    6. boilerplate — everything else (stable, free text)
+    1. duration — time spans (ranges, "within X days", business days)
+    2. currency — dollar signs or currency codes
+    3. date — date patterns (YYYY-MM-DD, MM/DD/YYYY, etc.)
+    4. percentage — number followed by %
+    5. named_entity — two or more capitalized words (proper nouns)
+    6. numeric — plain numbers with optional commas/decimals
+    7. boilerplate — everything else (stable, free text)
 
     Args:
         value: The slot fill value string to classify.
 
     Returns:
-        One of: 'currency', 'date', 'percentage', 'named_entity',
-        'numeric', 'boilerplate'.
+        One of: 'duration', 'currency', 'date', 'percentage',
+        'named_entity', 'numeric', 'boilerplate'.
     """
     v = value.strip()
     if not v:
         return "boilerplate"
+    if _DURATION_RE_RANGE.search(v):
+        return "duration"
+    if _DURATION_RE_WITHIN.search(v):
+        return "duration"
+    if _DURATION_RE_BUSINESS.search(v):
+        return "duration"
     if _CURRENCY_RE.match(v):
         return "currency"
     if _DATE_RE.match(v):
@@ -93,31 +115,134 @@ def determine_variant(query: str, response_token_count: int | None = None) -> st
     return "detailed"
 
 
-def extract_template(
-    response: str,
-) -> Tuple[str, List[str], Dict[str, List[str]], Dict[str, str]]:
-    """Extract a template skeleton from an LLM response.
+# Words to skip when deriving semantic labels from context
+_STOP_WORDS = frozenset({
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+    "in", "on", "at", "to", "for", "of", "with", "by", "from", "as",
+    "and", "or", "but", "not", "no", "it", "its", "this", "that",
+    "has", "have", "had", "do", "does", "did", "will", "would", "can",
+    "could", "should", "may", "might", "about", "than", "over", "under",
+})
 
-    Identifies variable portions of the response and replaces them with
-    [slot_name] markers. Returns the skeleton, ordered slot list,
-    dependency graph, and slot type classifications.
+
+def _derive_semantic_label(
+    line: str, match_start: int, slot_type: str, used_labels: set
+) -> str:
+    """Derive a descriptive slot name from surrounding context.
+
+    Looks at the 1-3 words immediately before the matched value in the
+    line to create a meaningful label like 'contribution_limit' instead
+    of 'currency_0'.
+
+    Args:
+        line: The current line being processed.
+        match_start: Character index where the matched value starts.
+        slot_type: The regex-derived type (e.g. 'currency', 'number').
+        used_labels: Set of labels already used (to avoid duplicates).
+
+    Returns:
+        A descriptive slot name like 'contribution_limit_currency' or
+        falls back to '{slot_type}_{n}' if no context is available.
+    """
+    # Get text before the match, extract last 1-3 meaningful words
+    prefix = line[:match_start].strip().rstrip(":(-–—")
+    words = [w.lower().strip(".,;:()") for w in prefix.split()]
+    # Filter out stop words and slot markers
+    context_words = [
+        w for w in words
+        if w and w not in _STOP_WORDS and not w.startswith("[")
+    ]
+
+    if context_words:
+        # Take last 1-2 context words as the label
+        label_parts = context_words[-2:] if len(context_words) >= 2 else context_words[-1:]
+        # Clean: only keep alphanumeric and underscores
+        label = "_".join(re.sub(r"[^a-z0-9]", "", p) for p in label_parts if re.sub(r"[^a-z0-9]", "", p))
+        if label:
+            base = f"{label}_{slot_type}"
+        else:
+            base = slot_type
+    else:
+        base = slot_type
+
+    # Ensure uniqueness
+    candidate = base
+    counter = 0
+    while candidate in used_labels:
+        counter += 1
+        candidate = f"{base}_{counter}"
+    return candidate
+
+
+def _calculate_code_block_ratio(response: str) -> float:
+    """Calculate the fraction of response content inside code blocks.
 
     Args:
         response: The full LLM response text.
 
     Returns:
-        Tuple of (skeleton, slots, dependency_graph, slot_types) where:
+        Float between 0.0 and 1.0 representing the proportion of
+        tokens inside backtick-fenced code blocks.
+    """
+    total_tokens = len(response.split())
+    if total_tokens == 0:
+        return 0.0
+
+    code_tokens = 0
+    in_code = False
+    for line in response.split("\n"):
+        if line.strip().startswith("```"):
+            in_code = not in_code
+            continue
+        if in_code:
+            code_tokens += len(line.split())
+
+    return code_tokens / total_tokens
+
+
+def extract_template(
+    response: str,
+) -> Tuple[str, List[str], Dict[str, List[str]], Dict[str, str], bool]:
+    """Extract a template skeleton from an LLM response.
+
+    Identifies variable portions of the response and replaces them with
+    [slot_name] markers. Returns the skeleton, ordered slot list,
+    dependency graph, slot type classifications, and whether the response
+    is suitable for templating.
+
+    A response is not templateable if more than 60% of its content is
+    inside backtick-fenced code blocks.
+
+    After extraction, if more than 6 slots are found, only the 6 with
+    the longest fill values are kept — the rest are treated as literal
+    skeleton text.
+
+    Args:
+        response: The full LLM response text.
+
+    Returns:
+        Tuple of (skeleton, slots, dependency_graph, slot_types,
+        templateable) where:
         - skeleton: response text with [slot_name] placeholders
         - slots: ordered list of slot names
         - dependency_graph: maps each slot to its dependency slots
         - slot_types: maps each slot name to its classified type
+        - templateable: False if response is >60% code blocks
     """
+    # ── Templateable check ────────────────────────────────────────────
+    code_ratio = _calculate_code_block_ratio(response)
+    if code_ratio > 0.60:
+        return response, [], {}, {}, False
+
+    # ── Slot extraction ───────────────────────────────────────────────
     lines = response.strip().split("\n")
     skeleton_lines: List[str] = []
     slots: List[str] = []
+    slot_fills: Dict[str, str] = {}  # slot_name → original matched text
     dependency_graph: Dict[str, List[str]] = {}
     slot_types: Dict[str, str] = {}
     slot_counter = 0
+    used_labels: set = set()
     in_code_block = False
 
     for line in lines:
@@ -147,9 +272,15 @@ def extract_template(
         for pattern, slot_type in patterns:
             matches = list(re.finditer(pattern, processed_line))
             for match in reversed(matches):
-                slot_name = f"{slot_type}_{slot_counter}"
+                # Derive a semantic label from surrounding context
+                label = _derive_semantic_label(
+                    processed_line, match.start(), slot_type, used_labels
+                )
+                slot_name = label
+                used_labels.add(label)
                 slot_counter += 1
                 slots.append(slot_name)
+                slot_fills[slot_name] = match.group()
                 # Classify the matched value
                 slot_types[slot_name] = classify_slot(match.group())
                 # Slots depend on previously found slots in the same line
@@ -167,9 +298,29 @@ def extract_template(
 
     skeleton = "\n".join(skeleton_lines)
 
-    # If no slots were extracted, keep the full response as the skeleton
-    # with no slots — the slot engine will return it as-is.
-    return skeleton, slots, dependency_graph, slot_types
+    # ── Slot count cap ────────────────────────────────────────────────
+    # If more than _MAX_SLOT_COUNT slots were extracted, keep only the
+    # ones with the longest fill values (most likely genuinely variable).
+    # Discard the rest by replacing their markers back with literal text.
+    if len(slots) > _MAX_SLOT_COUNT:
+        # Sort by fill value length descending, keep top _MAX_SLOT_COUNT
+        ranked = sorted(slots, key=lambda s: len(slot_fills.get(s, "")), reverse=True)
+        keep = set(ranked[:_MAX_SLOT_COUNT])
+        discard = [s for s in slots if s not in keep]
+
+        for slot_name in discard:
+            # Replace [slot_name] marker back with original text
+            skeleton = skeleton.replace(f"[{slot_name}]", slot_fills[slot_name])
+            del dependency_graph[slot_name]
+            del slot_types[slot_name]
+            # Remove discarded slots from other slots' dependency lists
+            for dep_list in dependency_graph.values():
+                if slot_name in dep_list:
+                    dep_list.remove(slot_name)
+
+        slots = [s for s in slots if s in keep]
+
+    return skeleton, slots, dependency_graph, slot_types, True
 
 
 # Splitter patterns for breaking queries into distinct aspects

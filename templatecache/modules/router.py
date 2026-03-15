@@ -109,7 +109,9 @@ class IntentRouter:
             # Use first example to build template
             first_response = group[0]["response"]
             variant = determine_variant(group[0]["query"])
-            skeleton, slots, dep_graph, _slot_types = extract_template(first_response)
+            skeleton, slots, dep_graph, _slot_types, templateable = extract_template(
+                first_response
+            )
 
             template = ResponseTemplate(
                 intent_id=intent_id,
@@ -117,6 +119,8 @@ class IntentRouter:
                 slots=slots,
                 dependency_graph=dep_graph,
                 variant=variant,
+                templateable=templateable,
+                raw_response=first_response if not templateable else "",
             )
 
             centroid = IntentCentroid(

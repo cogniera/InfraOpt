@@ -134,7 +134,7 @@ templatecache/
 | `LOCAL_EMBEDDING_MODEL` | all-MiniLM-L6-v2 | — | Local embedding model |
 | `INTENT_SIMILARITY_THRESHOLD` | 0.55 | 0.90 | Cosine cutoff for intent match |
 | `SLOT_CONFIDENCE_THRESHOLD` | 0.50 | 0.85 | Lower bound: uncertain below this |
-| `SLOT_BLEND_THRESHOLD` | 0.85 | 0.92 | Upper bound: confident above this |
+| `SLOT_BLEND_THRESHOLD` | 0.65 | 0.92 | Upper bound: confident above this |
 | `SLOT_TRANSFER_PENALTY` | 0.15 | 0.15 | Confidence penalty for cross-template transfer |
 | `SLOT_TRANSFER_ENABLED` | true | true | Enable cross-query slot transfer |
 | `SLOT_BLEND_ENABLED` | true | true | Enable confidence-weighted blending |
@@ -154,7 +154,10 @@ templatecache/
 
 **ResponseTemplate**
 Skeleton string with `[slot_name]` markers, ordered slot list, slot dependency
-graph, variant tag, intent ID, hit count, created_at timestamp.
+graph, variant tag, intent ID, hit count, created_at timestamp. The dependency
+graph maps each slot to the list of previously extracted slots that appear on
+the same line — a slot depends on all earlier slots that co-occur on its line
+in the skeleton.
 
 **SlotRecord**
 Keyed by `slot:{slot_id}:{context_hash}`. Fields: fill_value, fill_embedding,
@@ -178,6 +181,7 @@ on every cache hit.
 | `slot:{slot_id}:{context_hash}` | Serialized SlotRecord |
 | `intent:{intent_id}` | Serialized IntentCentroid |
 | `gap:{template_id}:{gap_type}` | Gap event counter and aspect list |
+| `promoted:{template_id}` | Set of gap types already promoted to slots |
 
 No freeform key naming. All reads and writes go through CacheStore methods.
 
@@ -280,14 +284,17 @@ and fall back to full generation with `cache_hit: False`.
 ## Gap type classification
 
 Implemented in `gap_learner.py` as `classify_gap(aspect: str) -> str`.
+Classification order (first match wins):
 
 | Keywords in aspect | Gap type |
 |---|---|
-| example, instance, such as, like | EXAMPLE_REQUEST |
-| recent, latest, current, now, today | RECENCY_REQUEST |
-| why, reason, explain, how | EXPLANATION_REQUEST |
-| compare, difference, vs, versus | COMPARISON_REQUEST |
-| anything else | DETAIL_REQUEST |
+| when, date, year, month, time, recent, latest, update, current, now, today, ago | temporal |
+| compar*, vs, versus, differ*, better, worse, than, contrast, alternative | comparison |
+| how much/many/long/far/big/fast/often, cost, price, size, number, count, rate, percent | quantitative |
+| why, caus*, reason, because, result, effect, impact, consequence, lead to | causal |
+| how to, step(s), process, method, way to, procedure, guide | procedural |
+| example, instance, sample, demonstrate, show me, such as, like what | example |
+| anything else | elaboration |
 
 ---
 
@@ -345,15 +352,16 @@ Implemented in `gap_learner.py` as `classify_gap(aspect: str) -> str`.
 ## Slot type classification
 
 Implemented in `utils/extractor.py` as `classify_slot(value: str) -> str`.
+Classification order (first match wins):
 
 | Pattern | Type |
 |---|---|
-| Currency symbol + digits | CURRENCY |
-| Date pattern (digits with / or -) | DATE |
-| Digits + time unit | DURATION |
-| Two capitalised words | NAMED_ENTITY |
-| Length > 60 characters | BOILERPLATE |
-| Everything else | FREE_TEXT |
+| `$` + digits or digits + currency code (USD, EUR, etc.) | currency |
+| Date pattern (YYYY-MM-DD, MM/DD/YYYY, etc.) | date |
+| Digits followed by `%` | percentage |
+| Two or more capitalised words (proper nouns) | named_entity |
+| Plain digits with optional commas/decimals | numeric |
+| Everything else (stable, free text) | boilerplate |
 
 Called on every slot value at extraction time. Result stored on SlotRecord.
 

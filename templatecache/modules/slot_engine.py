@@ -25,6 +25,35 @@ from templatecache.utils.llm import llm_call
 
 logger = logging.getLogger(__name__)
 
+# Known slot type suffixes, ordered longest-first for matching
+_KNOWN_TYPES = [
+    "quoted_content", "currency", "number", "date", "boilerplate",
+]
+
+
+def _extract_slot_type(slot_name: str) -> str:
+    """Extract the slot type from a semantic slot name.
+
+    Checks if the slot name ends with a known type suffix.
+    E.g. 'creator_quoted_content' → 'quoted_content',
+    'limit_currency' → 'currency', 'year_founded_number' → 'number'.
+    Falls back to 'boilerplate' if no known suffix matches.
+
+    Args:
+        slot_name: The full slot name.
+
+    Returns:
+        The slot type string.
+    """
+    for t in _KNOWN_TYPES:
+        if slot_name.endswith(f"_{t}") or slot_name == t:
+            return t
+    # Legacy format: number_0, currency_1 — check if prefix is a type
+    prefix = slot_name.rsplit("_", 1)[0] if "_" in slot_name else slot_name
+    if prefix in _KNOWN_TYPES:
+        return prefix
+    return "boilerplate"
+
 
 class SlotEngine:
     """Fills template slots with query-specific content.
@@ -252,7 +281,7 @@ class SlotEngine:
             result = result.replace(f"[{slot_name}]", value)
         # Safety: remove any remaining [slot_name] markers that weren't
         # filled (e.g. slot name mismatch, missing fill)
-        result = re.sub(r"\[[a-z_]+\d*\]", "", result)
+        result = re.sub(r"\[[a-z][a-z0-9_]*\]", "", result)
         return result
 
     async def fill(
@@ -362,8 +391,10 @@ class SlotEngine:
             if slot_name in fills:
                 continue
 
-            # Determine slot type from the name prefix (e.g. number_0 → number)
-            slot_type = slot_name.rsplit("_", 1)[0] if "_" in slot_name else "boilerplate"
+            # Determine slot type from the name suffix
+            # Semantic names end with the type: e.g. creator_quoted_content,
+            # limit_currency, year_founded_number
+            slot_type = _extract_slot_type(slot_name)
 
             # Attempt cross-query transfer first
             transfer_value, transfer_score = self._transfer_slot(
