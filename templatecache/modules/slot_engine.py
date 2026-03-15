@@ -106,44 +106,135 @@ class SlotEngine:
             visit(slot)
         return ordered
 
+    @staticmethod
+    def _sanitise_query_context(
+        query: str, template_skeleton: str
+    ) -> str | None:
+        """Check if the query is semantically close to the template skeleton.
+
+        If the query is too distant from the template (similarity < 0.4),
+        the query should not be used as context for slot filling — it may
+        cause the LLM to inject unrelated content from the query into
+        template slots.
+
+        Args:
+            query: The user query text.
+            template_skeleton: The template skeleton text.
+
+        Returns:
+            The query string if similarity >= 0.4, or None if the query
+            is semantically distant from the template.
+        """
+        query_embedding = embed(query)
+        skeleton_embedding = embed(template_skeleton[:200])
+        similarity = cosine_similarity(query_embedding, skeleton_embedding)
+        if similarity < 0.4:
+            return None
+        return query
+
     def _build_slot_prompt(
-        self, query: str, slot_name: str, filled: Dict[str, str], template: ResponseTemplate
+        self,
+        query: str,
+        slot_name: str,
+        filled: Dict[str, str],
+        template: ResponseTemplate,
+        slot_type: str = "",
     ) -> str:
         """Build a targeted prompt for filling a single slot.
+
+        Includes the query (if semantically close to the template),
+        already-filled dependency values, the template context, and
+        the slot name to fill. If the query is semantically distant
+        from the template (similarity < 0.4), the prompt is built
+        without query context to prevent domain contamination.
+
+        Type-specific formatting instructions are added for numeric,
+        currency, and duration slots.
 
         Args:
             query: The user query.
             slot_name: Name of the slot to fill.
             filled: Already-filled slot values (dependencies).
             template: The template being filled.
+            slot_type: Classified type of the slot (e.g. 'numeric',
+                'currency', 'duration').
 
         Returns:
             A prompt string for the LLM.
         """
+        sanitised = self._sanitise_query_context(query, template.skeleton)
         deps = ""
         if filled:
-            deps = " Context: " + "; ".join(f"{k}={v}" for k, v in filled.items()) + "."
-        return (
-            f"Q: {query}{deps}\n"
-            f"Fill the slot '{slot_name}'. Reply with ONLY the value, "
-            f"no brackets, no quotes, nothing else."
-        )
+            deps = " Already filled: " + "; ".join(
+                f"{k}={v}" for k, v in filled.items()
+            ) + "."
+
+        # Type-specific formatting instructions
+        slot_type_lower = slot_type.lower() if slot_type else ""
+        if slot_type_lower in ("numeric", "number"):
+            type_instruction = (
+                "Reply with a short human-readable number "
+                "(e.g. 17.1, not 17098240). Use millions or billions "
+                "as appropriate."
+            )
+        elif slot_type_lower == "currency":
+            type_instruction = (
+                "Reply with a formatted currency value "
+                "(e.g. $29.99, €15, not 2999)."
+            )
+        elif slot_type_lower == "duration":
+            type_instruction = (
+                "Reply with a human-readable duration "
+                "(e.g. 5-7 business days, within 24 hours)."
+            )
+        else:
+            type_instruction = (
+                "Reply with ONLY the value, no explanation."
+            )
+
+        skeleton_preview = template.skeleton[:100]
+        if sanitised:
+            return (
+                f"Fill the slot '{slot_name}' in this template. "
+                f"{type_instruction} "
+                f"Template context: {skeleton_preview}. "
+                f"Q: {sanitised}.{deps}"
+            )
+        else:
+            return (
+                f"Fill the slot '{slot_name}' in this template. "
+                f"{type_instruction} "
+                f"Template context: {skeleton_preview}.{deps}"
+            )
 
 
     @staticmethod
-    def _clean_fill_value(value: str) -> str:
+    def _clean_fill_value(value: str, slot_name: str | None = None) -> str | None:
         """Clean an LLM-generated slot fill value.
 
-        Strips whitespace, removes surrounding brackets (LLMs sometimes
-        mimic the [slot_name] format), and removes surrounding quotes.
+        Strips whitespace, removes bracket markers, removes surrounding
+        quotes, strips the slot name itself if it leaked into the value,
+        and removes any snake_case words (slot name patterns).
 
         Args:
             value: Raw fill value from the LLM.
+            slot_name: The slot name being filled. If provided, the slot
+                name and any snake_case words are stripped from the value
+                to prevent slot name contamination.
 
         Returns:
-            Cleaned fill value.
+            Cleaned fill value, or None if cleaning leaves an empty
+            string (falls back to LLM retry or transfer).
         """
+        if not value:
+            return value
         v = value.strip()
+        # Remove leading slot-name bracket markers: [supplement_0]Jupiter → Jupiter
+        # Only strips markers that look like slot names (contain underscores
+        # or letters), not numeric values like [599].
+        v = re.sub(r"^\[[a-z_]+\d*\]\s*", "", v)
+        # Remove any inline slot-name bracket markers
+        v = re.sub(r"\[[a-z_]+\d*\]", "", v)
         # Remove surrounding brackets: [599] → 599
         if v.startswith("[") and v.endswith("]"):
             v = v[1:-1]
@@ -152,7 +243,15 @@ class SlotEngine:
             v.startswith("'") and v.endswith("'")
         ):
             v = v[1:-1]
-        return v.strip()
+        if slot_name:
+            # Remove the slot name itself if it appears in the value
+            v = re.sub(rf"\b{re.escape(slot_name)}\b", "", v, flags=re.IGNORECASE)
+            # Remove leaked slot name patterns: word_word_digit sequences
+            # that look like slot identifiers (e.g. "country_area_0")
+            v = re.sub(r"\b[a-z]+(?:_[a-z]+)+_\d+\b", "", v)
+        # Collapse whitespace
+        v = re.sub(r"\s+", " ", v).strip()
+        return v if v else None
 
 
     def _transfer_slot(
@@ -370,9 +469,12 @@ class SlotEngine:
         blend_candidates: Dict[str, Dict] = {}
 
         for slot_name, record in blend_slots.items():
-            prompt = self._build_slot_prompt(query, slot_name, fills, template)
+            blend_slot_type = _extract_slot_type(slot_name)
+            prompt = self._build_slot_prompt(
+                query, slot_name, fills, template, slot_type=blend_slot_type
+            )
             fresh_value = await llm_call(prompt, max_tokens=80)
-            fresh_value = self._clean_fill_value(fresh_value)
+            fresh_value = self._clean_fill_value(fresh_value, slot_name) or ""
             selected, blend_record = await self._blend_fills(
                 slot_name, record.fill_value, fresh_value, record.similarity_score
             )
@@ -407,9 +509,11 @@ class SlotEngine:
                 continue
 
             # Fall back to LLM
-            prompt = self._build_slot_prompt(query, slot_name, fills, template)
+            prompt = self._build_slot_prompt(
+                query, slot_name, fills, template, slot_type=slot_type
+            )
             fill_value = await llm_call(prompt, max_tokens=80)
-            fill_value = self._clean_fill_value(fill_value)
+            fill_value = self._clean_fill_value(fill_value, slot_name) or ""
             fills[slot_name] = fill_value
             slot_sources[slot_name] = "inference"
             slots_from_inference += 1

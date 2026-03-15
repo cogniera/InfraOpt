@@ -4,14 +4,17 @@ import asyncio
 import logging
 from typing import Dict, List
 
+import templatecache.config as config
 from templatecache.modules.cache_store import CacheStore
 from templatecache.modules.cluster_router import ClusterRouter
 from templatecache.modules.gap_learner import GapLearner
 from templatecache.modules.router import IntentRouter
 from templatecache.modules.slot_engine import SlotEngine
 from templatecache.utils.extractor import (
+    _format_compound_list_response,
     detect_query_gaps,
     determine_variant,
+    extract_specific_answer,
     extract_template,
     split_multi_query,
 )
@@ -87,7 +90,7 @@ class TemplateCache:
         """
         self._cache_store = CacheStore()
         self._router = IntentRouter(self._cache_store)
-        self._cluster_router = ClusterRouter()
+        self._cluster_router = ClusterRouter(cache_store=self._cache_store)
         self._slot_engine = SlotEngine(self._cache_store)
         self._gap_learner = GapLearner(self._cache_store, savings_log=savings_log)
         self._savings_log = savings_log
@@ -272,6 +275,23 @@ class TemplateCache:
                     }
 
                 if response is not None:
+                    # Answer extraction: if query asks for a specific
+                    # item and the template is a list variant, extract
+                    # just the relevant item.
+                    if config.ANSWER_EXTRACTION_ENABLED and template.variant == "list":
+                        compound_formatted = _format_compound_list_response(prompt, response)
+                        if compound_formatted is not None:
+                            stitch_info["answer_extracted"] = True
+                            stitch_info["compound_formatted"] = True
+                            stitch_info["full_list_response"] = response
+                            response = compound_formatted
+                        else:
+                            extracted = extract_specific_answer(prompt, response)
+                            if extracted is not None:
+                                stitch_info["answer_extracted"] = True
+                                stitch_info["full_list_response"] = response
+                                response = extracted
+
                     estimated_full = len(response.split()) * 2
                     actual_used = from_inference * 40
                     savings = max(0.0, 1.0 - (actual_used / max(estimated_full, 1)))

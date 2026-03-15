@@ -117,6 +117,208 @@ def determine_variant(query: str, response_token_count: int | None = None) -> st
     return "detailed"
 
 
+# ── Answer extraction from list-style responses ─────────────────────────
+
+# Superlative/comparative patterns that signal a specific-item query
+_SPECIFIC_QUERY_RE = re.compile(
+    r"\b((?:the\s+)?(?:largest|biggest|smallest|fastest|slowest|hottest|coldest|"
+    r"tallest|shortest|heaviest|lightest|oldest|newest|closest|farthest|nearest|"
+    r"most\s+\w+|least\s+\w+|best|worst|cheapest|most expensive|"
+    r"first|last|longest|deepest|highest|lowest))\b",
+    re.IGNORECASE,
+)
+
+# Pattern to extract "Name (descriptor, ...)" items from a list response
+_LIST_ITEM_RE = re.compile(
+    r"([A-Z][a-zA-Z\s'-]+?)\s*\(([^)]+)\)"
+)
+
+
+def _format_compound_list_response(query: str, response: str) -> str | None:
+    """Format a compound query response with a direct answer prepended.
+
+    When a query contains both a superlative signal and a list signal
+    joined by a compound conjunction, extracts the specific answer for
+    the superlative part and prepends it before the full list.
+
+    Args:
+        query: The user query text.
+        response: The full cached list response text.
+
+    Returns:
+        Formatted string with direct answer followed by full list,
+        or None if the query is not a compound superlative+list query.
+    """
+    query_lower = query.lower()
+
+    SUPERLATIVE_SIGNALS = [
+        "largest", "smallest", "biggest", "fastest", "slowest",
+        "highest", "lowest", "cheapest", "oldest", "newest",
+        "first", "last", "closest", "furthest", "heaviest",
+        "lightest", "hottest", "coldest", "brightest",
+    ]
+
+    LIST_SIGNALS = [
+        "list", "rest", "all", "every", "others", "remaining",
+        "the rest", "list the", "list all",
+    ]
+
+    COMPOUND_SIGNALS = ["then", "and also", "as well as", "and then", "plus"]
+
+    has_superlative = any(s in query_lower for s in SUPERLATIVE_SIGNALS)
+    has_list = any(s in query_lower for s in LIST_SIGNALS)
+    has_compound = any(s in query_lower for s in COMPOUND_SIGNALS)
+
+    if not (has_superlative and has_list and has_compound):
+        return None
+
+    # Strip the compound part so extract_specific_answer sees a clean
+    # single-fact query that passes gate 2 and gate 3.
+    specific_part = query.split("then")[0].split("and also")[0].strip()
+
+    extracted = extract_specific_answer(specific_part, response)
+
+    if extracted is None:
+        return None
+
+    return f"{extracted}\n\nFull list:\n{response}"
+
+
+def extract_specific_answer(query: str, response: str) -> str | None:
+    """Extract a specific answer from a list-style cached response.
+
+    When the query asks for a specific item (e.g. "what's the largest
+    planet") but the cached response is a full list, this function
+    finds the matching item and returns a focused answer.
+
+    Gates:
+    1. Superlative signal — query must contain a superlative keyword.
+    2. Question starter — query must begin with a specific question form.
+    3. Compound abort — queries with "then", "and also", etc. fall through.
+    4. List intent abort — queries asking to list/enumerate fall through.
+    5. Minimum score — extracted answer must score >= ANSWER_EXTRACTION_MIN_SCORE.
+
+    Args:
+        query: The user query text.
+        response: The full cached response text.
+
+    Returns:
+        A focused answer string if extraction succeeds, or None if
+        the query isn't asking for a specific item or no match is found.
+    """
+    from templatecache.config import ANSWER_EXTRACTION_MIN_SCORE
+
+    query_lower = query.lower()
+
+    # ── Gate 1: Superlative signal ────────────────────────────────────
+    SUPERLATIVE_SIGNALS = [
+        "largest", "smallest", "biggest", "fastest", "slowest",
+        "highest", "lowest", "cheapest", "most expensive", "oldest",
+        "newest", "first", "last", "closest", "furthest",
+        "heaviest", "lightest", "hottest", "coldest", "brightest",
+    ]
+    has_superlative = any(signal in query_lower for signal in SUPERLATIVE_SIGNALS)
+    if not has_superlative:
+        return None
+
+    # ── Gate 2: Specific question starter ─────────────────────────────
+    SPECIFIC_QUESTION_STARTERS = [
+        "which", "what is the", "what's the", "who is the",
+        "who's the", "name the", "tell me the", "what was the",
+    ]
+    has_question_starter = any(
+        starter in query_lower for starter in SPECIFIC_QUESTION_STARTERS
+    )
+    if not has_question_starter:
+        return None
+
+    # ── Gate 3: Compound query abort ──────────────────────────────────
+    COMPOUND_SIGNALS = [
+        "then", "and also", "as well as", "plus", "along with", "and then",
+    ]
+    has_compound = any(signal in query_lower for signal in COMPOUND_SIGNALS)
+    if has_compound:
+        return None
+
+    # ── Gate 4: List intent abort ─────────────────────────────────────
+    _LIST_INTENT_RE = re.compile(
+        r"\b(list|name all|all of|all the|every|each|enumerate)\b",
+        re.IGNORECASE,
+    )
+    if _LIST_INTENT_RE.search(query):
+        return None
+
+    # ── Parse list items ──────────────────────────────────────────────
+    items = _LIST_ITEM_RE.findall(response)
+    if not items:
+        return None
+
+    # Synonym mapping for common superlatives
+    _SYNONYMS = {
+        "biggest": "largest",
+        "largest": "biggest",
+        "smallest": "tiniest",
+        "tiniest": "smallest",
+        "quickest": "fastest",
+        "fastest": "quickest",
+        "furthest": "farthest",
+        "farthest": "furthest",
+    }
+
+    # ── Find the superlative adjective ────────────────────────────────
+    match = _SPECIFIC_QUERY_RE.search(query)
+    if not match:
+        return None
+
+    adjective = match.group(1).lower().strip()
+    adjective = re.sub(r"^the\s+", "", adjective)
+    adjective_alt = _SYNONYMS.get(adjective)
+
+    candidates = [adjective]
+    if adjective_alt:
+        candidates.append(adjective_alt)
+
+    # ── Match against descriptors with scoring ────────────────────────
+    for idx, (name, descriptors) in enumerate(items):
+        desc_lower = descriptors.lower()
+        for adj in candidates:
+            if adj in desc_lower:
+                name = name.strip()
+
+                # Score the match
+                score = 0.0
+                # +2 for each criterion keyword found in descriptors
+                for signal in SUPERLATIVE_SIGNALS:
+                    if signal in desc_lower:
+                        score += 2.0
+                # +3 for positional correctness
+                if adjective in ("first", "closest", "nearest") and idx == 0:
+                    score += 3.0
+                elif adjective in ("last", "furthest", "farthest") and idx == len(items) - 1:
+                    score += 3.0
+                elif adjective not in ("first", "last", "closest", "nearest", "furthest", "farthest"):
+                    # Non-positional superlative: +3 for direct descriptor match
+                    score += 3.0
+
+                if score < ANSWER_EXTRACTION_MIN_SCORE:
+                    return None
+
+                return f"{name}. It is the {adjective} ({descriptors.strip()})."
+
+    # Check for "most/least X" patterns
+    adj_core = re.sub(r"^(most|least)\s+", "", adjective)
+    if adj_core != adjective:
+        for idx, (name, descriptors) in enumerate(items):
+            if adj_core in descriptors.lower():
+                name = name.strip()
+                score = 2.0 + 3.0  # keyword match + non-positional
+                if score < ANSWER_EXTRACTION_MIN_SCORE:
+                    return None
+                return f"{name}. It is the {adjective} ({descriptors.strip()})."
+
+    return None
+
+
 # Words to skip when deriving semantic labels from context
 _STOP_WORDS = frozenset({
     "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
@@ -350,6 +552,110 @@ _QUESTION_STARTERS = re.compile(
 )
 
 
+# Pronouns and bare references that signal a dangling reference needing context
+_DANGLING_RE = re.compile(
+    r"\b(one|ones|it|its|them|they|their|this|that|these|those)\b",
+    re.IGNORECASE,
+)
+
+# Superlative/comparative adjectives that often precede a dangling "one"
+_BARE_SUPERLATIVE_RE = re.compile(
+    r"\bthe\s+(biggest|smallest|largest|fastest|slowest|best|worst|most|least|"
+    r"longest|shortest|tallest|heaviest|lightest|oldest|newest|cheapest|"
+    r"most expensive|closest|farthest|nearest)\b",
+    re.IGNORECASE,
+)
+
+
+def _extract_topic(first_part: str, full_query: str) -> str:
+    """Extract the topic noun phrase from the first sub-question.
+
+    Looks for the main subject/object of the first sub-question by
+    stripping question starters and extracting the noun phrase.
+
+    Args:
+        first_part: The first sub-question text.
+        full_query: The original unsplit query for fallback.
+
+    Returns:
+        A topic string like 'planets in the solar system', or empty
+        string if no topic can be extracted.
+    """
+    text = first_part.lower().strip()
+    # Strip common question prefixes
+    prefixes = [
+        r"^how many\s+", r"^what (?:is|are|was|were) (?:the |a |an )?\s*",
+        r"^what\s+", r"^who (?:is|are|was|were)\s+",
+        r"^where (?:is|are|was|were)\s+", r"^when (?:is|are|was|were)\s+",
+        r"^can you (?:name|list|tell me about|describe|explain)\s+",
+        r"^(?:name|list|tell me about|describe|explain)\s+",
+    ]
+    for prefix in prefixes:
+        text = re.sub(prefix, "", text, flags=re.IGNORECASE)
+
+    # Strip verb phrases that aren't part of the noun phrase
+    # "planets are there in the solar system" → "planets in the solar system"
+    text = re.sub(
+        r"\s+(?:are|is|was|were|do|does|did|have|has|had)\s+"
+        r"(?:there|here|it|they|we|you)\s*",
+        " ", text, flags=re.IGNORECASE,
+    )
+    # Strip trailing verbs/prepositions
+    text = re.sub(r"\s+(?:do|does|did|have|has|had|is|are|was|were)$", "", text)
+    text = text.strip().rstrip("?.,;:")
+
+    if len(text) > 2:
+        return text
+    return ""
+
+
+def _carry_context(parts: List[str], full_query: str) -> List[str]:
+    """Inject topic context into sub-questions with dangling references.
+
+    When a sub-question contains pronouns like 'one', 'it', 'them' or
+    bare superlatives like 'the biggest' without a noun, the topic from
+    the first sub-question is appended to provide context.
+
+    Args:
+        parts: List of sub-question strings from the splitter.
+        full_query: The original unsplit query.
+
+    Returns:
+        List of sub-questions with context injected where needed.
+    """
+    if len(parts) < 2:
+        return parts
+
+    topic = _extract_topic(parts[0], full_query)
+    if not topic:
+        return parts
+
+    result = [parts[0]]
+    for part in parts[1:]:
+        has_dangling = _DANGLING_RE.search(part)
+        has_bare_superlative = _BARE_SUPERLATIVE_RE.search(part)
+
+        if has_dangling or has_bare_superlative:
+            # Replace dangling "one"/"ones" with the topic noun
+            enriched = re.sub(
+                r"\b(the\s+(?:biggest|smallest|largest|fastest|slowest|best|worst|"
+                r"most|least|longest|shortest|tallest|heaviest|lightest|oldest|"
+                r"newest|cheapest|most expensive|closest|farthest|nearest))\s+"
+                r"(one|ones?)\b",
+                rf"\1 {topic}",
+                part,
+                flags=re.IGNORECASE,
+            )
+            # If no superlative+one pattern, just append topic as context
+            if enriched == part:
+                enriched = f"{part} (regarding {topic})"
+            result.append(enriched)
+        else:
+            result.append(part)
+
+    return result
+
+
 def split_multi_query(query: str) -> List[str]:
     """Split a multi-topic query into individual sub-questions.
 
@@ -415,7 +721,7 @@ def split_multi_query(query: str) -> List[str]:
 
     # If most parts are semantically distinct, treat as multi-query
     if distinct_count >= len(topic_parts) // 2 and len(topic_parts) >= 2:
-        return topic_parts
+        return _carry_context(topic_parts, query)
 
     return [query.strip()]
 

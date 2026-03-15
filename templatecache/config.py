@@ -51,6 +51,10 @@ SLOT_BLEND_THRESHOLD: float = 0.65 if USE_LOCAL_EMBEDDINGS else 0.92  # above th
 GAP_LEARNING_ENABLED: bool = True
 GAP_PROMOTION_THRESHOLD: int = 3  # gap type occurrences before promoting to slot
 
+# Answer extraction from list-style responses
+ANSWER_EXTRACTION_ENABLED: bool = True
+ANSWER_EXTRACTION_MIN_SCORE: float = 3.0
+
 # Model names
 EMBEDDING_MODEL: str = "gemini-embedding-001"
 LLM_MODEL: str = "gemini-2.0-flash"
