@@ -16,6 +16,8 @@ from templatecache.config import (
     REDIS_DB,
     REDIS_HOST,
     REDIS_PORT,
+    SLOT_CONFIDENCE_THRESHOLD,
+    SLOT_CONFIDENCE_THRESHOLDS,
 )
 from templatecache.models.intent import IntentCentroid
 from templatecache.models.slot import SlotRecord
@@ -54,13 +56,18 @@ class CacheStore:
     def get_slot_confidence(self, slot_id: str, context_hash: str) -> Optional[SlotRecord]:
         """Retrieve a SlotRecord and apply time-based confidence decay.
 
+        The effective confidence threshold is determined by the slot's type
+        via ``SLOT_CONFIDENCE_THRESHOLDS.get(slot_type, SLOT_CONFIDENCE_THRESHOLD)``.
+        The resolved threshold is stored on the returned record as
+        ``effective_threshold`` for callers to use.
+
         Args:
             slot_id: The slot name.
             context_hash: Hash of the query context.
 
         Returns:
-            SlotRecord with decayed similarity_score if found, None otherwise.
-            Missing keys return None without raising.
+            SlotRecord with decayed similarity_score and effective_threshold
+            if found, None otherwise. Missing keys return None without raising.
         """
         raw = self._redis.get(f"slot:{slot_id}:{context_hash}")
         if raw is None:
@@ -78,6 +85,15 @@ class CacheStore:
         decay = math.pow(CONFIDENCE_DECAY_FACTOR, periods)
         record.decay_weight = decay
         record.similarity_score = record.similarity_score * decay
+
+        # Resolve type-specific confidence threshold
+        slot_type = getattr(record, "slot_type", None)
+        if slot_type is not None:
+            record.effective_threshold = SLOT_CONFIDENCE_THRESHOLDS.get(
+                slot_type, SLOT_CONFIDENCE_THRESHOLD
+            )
+        else:
+            record.effective_threshold = SLOT_CONFIDENCE_THRESHOLD
 
         return record
 

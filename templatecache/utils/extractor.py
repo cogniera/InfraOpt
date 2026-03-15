@@ -15,7 +15,9 @@ _CURRENCY_RE = re.compile(r"^\$[\d,.]+$|^[\d,.]+\s*(USD|EUR|GBP|JPY|CAD|AUD)$", 
 _DATE_RE = re.compile(r"^\d{4}[-/]\d{2}[-/]\d{2}$|^\d{1,2}[-/]\d{1,2}[-/]\d{2,4}$")
 _PERCENTAGE_RE = re.compile(r"^[\d.]+%$")
 _NUMERIC_RE = re.compile(r"^[\d,.]+$")
-_NAMED_ENTITY_RE = re.compile(r"^[A-Z][a-z]+(?: [A-Z][a-z]+)+$")
+# Named entities: two+ words with at least two capitalized, allows lowercase
+# particles like "van", "de", "von", "di", "del", "la" between them.
+_NAMED_ENTITY_RE = re.compile(r"^[A-Z][a-z]+(?: (?:[a-z]{1,4} )*[A-Z][a-z]+)+$")
 
 # Duration patterns — time spans like "5-7 business days", "within 24 hours"
 _DURATION_RE_RANGE = re.compile(
@@ -156,14 +158,18 @@ def _derive_semantic_label(
     if context_words:
         # Take last 1-2 context words as the label
         label_parts = context_words[-2:] if len(context_words) >= 2 else context_words[-1:]
-        # Clean: only keep alphanumeric and underscores
-        label = "_".join(re.sub(r"[^a-z0-9]", "", p) for p in label_parts if re.sub(r"[^a-z0-9]", "", p))
+        # Clean: only keep lowercase letters and underscores
+        label = "_".join(re.sub(r"[^a-z]", "", p) for p in label_parts if re.sub(r"[^a-z]", "", p))
         if label:
             base = f"{label}_{slot_type}"
         else:
             base = slot_type
     else:
         base = slot_type
+
+    # Ensure label starts with a letter (never a digit)
+    if base and not base[0].isalpha():
+        base = f"{slot_type}_{base}"
 
     # Ensure uniqueness
     candidate = base
@@ -232,7 +238,7 @@ def extract_template(
     # ── Templateable check ────────────────────────────────────────────
     code_ratio = _calculate_code_block_ratio(response)
     if code_ratio > 0.60:
-        return response, [], {}, {}, False
+        return "", [], {}, {}, False
 
     # ── Slot extraction ───────────────────────────────────────────────
     lines = response.strip().split("\n")

@@ -16,6 +16,19 @@ INTENT_SIMILARITY_THRESHOLD: float = 0.55 if USE_LOCAL_EMBEDDINGS else 0.90
 
 # Slot confidence
 SLOT_CONFIDENCE_THRESHOLD: float = 0.50 if USE_LOCAL_EMBEDDINGS else 0.85
+
+# Per-type confidence thresholds — overrides SLOT_CONFIDENCE_THRESHOLD per slot type.
+# SLOT_CONFIDENCE_THRESHOLD remains the fallback for any type not in this dict.
+SLOT_CONFIDENCE_THRESHOLDS: dict = {
+    "currency": 0.85,
+    "date": 0.82,
+    "duration": 0.80,
+    "numeric": 0.78,
+    "named_entity": 0.80,
+    "boilerplate": 0.50,
+    "quoted_content": 0.65,
+}
+
 UNCERTAIN_SLOT_FALLBACK_RATIO: float = 0.5
 
 # Gap detection — how well must the cached response match the query?

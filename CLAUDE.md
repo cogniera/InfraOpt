@@ -134,6 +134,7 @@ templatecache/
 | `LOCAL_EMBEDDING_MODEL` | all-MiniLM-L6-v2 | — | Local embedding model |
 | `INTENT_SIMILARITY_THRESHOLD` | 0.55 | 0.90 | Cosine cutoff for intent match |
 | `SLOT_CONFIDENCE_THRESHOLD` | 0.50 | 0.85 | Lower bound: uncertain below this |
+| `SLOT_CONFIDENCE_THRESHOLDS` | see below | see below | Per-type confidence thresholds, overrides SLOT_CONFIDENCE_THRESHOLD per slot |
 | `SLOT_BLEND_THRESHOLD` | 0.65 | 0.92 | Upper bound: confident above this |
 | `SLOT_TRANSFER_PENALTY` | 0.15 | 0.15 | Confidence penalty for cross-template transfer |
 | `SLOT_TRANSFER_ENABLED` | true | true | Enable cross-query slot transfer |
@@ -204,6 +205,10 @@ No freeform key naming. All reads and writes go through CacheStore methods.
 - Blend zone only activates when SLOT_BLEND_ENABLED is true.
 - Transfer only activates when SLOT_TRANSFER_ENABLED is true.
 - Gap learning only activates when GAP_LEARNING_ENABLED is true.
+- Slot confidence evaluation must use SLOT_CONFIDENCE_THRESHOLDS.get(slot_type,
+  SLOT_CONFIDENCE_THRESHOLD) as the effective threshold. Never use the global
+  SLOT_CONFIDENCE_THRESHOLD directly for per-slot decisions. The global value
+  is a fallback only.
 
 ---
 
@@ -352,16 +357,23 @@ Classification order (first match wins):
 ## Slot type classification
 
 Implemented in `utils/extractor.py` as `classify_slot(value: str) -> str`.
-Classification order (first match wins):
 
-| Pattern | Type |
-|---|---|
-| `$` + digits or digits + currency code (USD, EUR, etc.) | currency |
-| Date pattern (YYYY-MM-DD, MM/DD/YYYY, etc.) | date |
-| Digits followed by `%` | percentage |
-| Two or more capitalised words (proper nouns) | named_entity |
-| Plain digits with optional commas/decimals | numeric |
-| Everything else (stable, free text) | boilerplate |
+| Pattern | Type | Confidence threshold |
+|---|---|---|
+| Currency symbol + digits | currency | 0.85 |
+| Date pattern (digits with / or -) | date | 0.82 |
+| Range or qualified duration (5-7 business days, within 24 hours, 3 working days) | duration | 0.80 |
+| Two or more capitalised words with optional lowercase particles (van, de, von, di) | named_entity | 0.80 |
+| Plain day/time counts without business/working qualifier (30 days, 24 hours) | numeric | 0.78 |
+| Length > 60 characters | boilerplate | 0.50 |
+| Everything else | quoted_content | 0.65 |
+
+**Known classification boundary:** Plain day counts without a business or working day
+qualifier (e.g. "30 days", "24 hours") classify as numeric not duration. This is
+intentional. The confidence thresholds for numeric (0.78) and duration (0.80) are
+close enough that the behavioural difference is minimal. If a specific intent requires
+plain day counts to be treated as duration, override the threshold explicitly in
+`SLOT_CONFIDENCE_THRESHOLDS` in config.py rather than changing the classifier.
 
 Called on every slot value at extraction time. Result stored on SlotRecord.
 

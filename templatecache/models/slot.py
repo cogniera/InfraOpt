@@ -20,7 +20,11 @@ class SlotRecord:
         decay_weight: Current decay multiplier applied to the score.
         created_at: Timestamp when this record was created.
         slot_type: Classified type of the slot value (e.g. 'currency',
-            'date', 'percentage', 'named_entity', 'numeric', 'boilerplate').
+            'date', 'duration', 'percentage', 'named_entity', 'numeric',
+            'boilerplate').
+        effective_threshold: Type-specific confidence threshold resolved
+            by CacheStore.get_slot_confidence(). Set at read time, not
+            persisted to Redis.
     """
 
     slot_id: str
@@ -31,4 +35,5 @@ class SlotRecord:
     decay_weight: float = 1.0
     created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
     slot_type: str = "boilerplate"
+    effective_threshold: float = 0.50
 

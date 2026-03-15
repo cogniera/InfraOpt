@@ -221,10 +221,10 @@ function buildStitchViz(stitch, intentId) {
 
   // Slot fills table
   // Gap type labels
-  const gaps = stitch.gaps_detected || [];
-  if (gaps.length > 0) {
+  const gapsList = stitch.gaps_detected || [];
+  if (gapsList.length > 0) {
     html += `<div class="stitch-section"><div class="stitch-label">🔍 Gaps Detected</div><ul style="margin:4px 0;padding-left:18px">`;
-    for (const gap of gaps) {
+    for (const gap of gapsList) {
       // Try to classify gap type client-side (basic heuristic)
       let gapType = 'elaboration';
       const gl = gap.toLowerCase();
