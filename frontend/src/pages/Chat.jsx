@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 import {
   Plus, MessageSquare, Trash2, Send, Zap,
-  ChevronDown, Sparkles, Copy, Check,
+  Sparkles, Copy, Check,
+  Activity, Database, TrendingDown,
 } from 'lucide-react';
 import PipelineAnimation from '../components/PipelineAnimation.jsx';
 
@@ -24,13 +25,6 @@ function loadChats() {
 function saveChats(c) {
   try { localStorage.setItem('inferopt-chats', JSON.stringify(c)); } catch {}
 }
-
-const MODELS = [
-  { id: 'llama-3-8b',  label: 'Llama 3 8B'  },
-  { id: 'mistral-7b',  label: 'Mistral 7B'  },
-  { id: 'phi-3-mini',  label: 'Phi-3 Mini'  },
-  { id: 'qwen-14b',    label: 'Qwen 14B'    },
-];
 
 const SUGGESTIONS = [
   'Explain transformer attention in simple terms',
@@ -448,75 +442,15 @@ function ChatSidebar({ chats, activeChatId, onSelect, onNew, onDelete }) {
   );
 }
 
-// ── Model selector ─────────────────────────────────────────────────────────────
-function ModelSelector({ value, onChange }) {
-  const [open, setOpen] = useState(false);
-  const current = MODELS.find(m => m.id === value) || MODELS[0];
-  return (
-    <div style={{ position: 'relative' }}>
-      <button
-        onClick={() => setOpen(o => !o)}
-        style={{
-          display: 'flex', alignItems: 'center', gap: 6,
-          background: 'rgba(255,255,255,0.05)',
-          border: '1px solid rgba(255,255,255,0.1)',
-          borderRadius: 8, padding: '5px 10px',
-          color: '#94a3b8', fontSize: 12, cursor: 'pointer',
-          fontFamily: 'JetBrains Mono, monospace',
-        }}
-      >
-        {current.label}
-        <ChevronDown size={12} style={{ transition: 'transform 0.2s', transform: open ? 'rotate(180deg)' : 'none' }} />
-      </button>
-      <AnimatePresence>
-        {open && (
-          <motion.div
-            initial={{ opacity: 0, y: -6, scale: 0.96 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: -4, scale: 0.96 }}
-            transition={{ duration: 0.12 }}
-            style={{
-              position: 'absolute', bottom: '110%', left: 0,
-              background: '#0d1422',
-              border: '1px solid rgba(255,255,255,0.1)',
-              borderRadius: 10, overflow: 'hidden', minWidth: 160,
-              boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
-              zIndex: 50,
-            }}
-          >
-            {MODELS.map(m => (
-              <div
-                key={m.id}
-                onClick={() => { onChange(m.id); setOpen(false); }}
-                style={{
-                  padding: '9px 14px', fontSize: 12, cursor: 'pointer',
-                  color: m.id === value ? '#818cf8' : '#64748b',
-                  background: m.id === value ? 'rgba(99,102,241,0.1)' : 'transparent',
-                  fontFamily: 'JetBrains Mono, monospace',
-                  transition: 'all 0.1s',
-                }}
-                onMouseEnter={e => { if (m.id !== value) e.currentTarget.style.background = 'rgba(255,255,255,0.04)'; }}
-                onMouseLeave={e => { if (m.id !== value) e.currentTarget.style.background = 'transparent'; }}
-              >
-                {m.label}
-              </div>
-            ))}
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </div>
-  );
-}
-
 // ── Main export ───────────────────────────────────────────────────────────────
 export default function Chat() {
   const [chats, setChats]             = useState(loadChats);
   const [activeChatId, setActiveChatId] = useState(() => loadChats()[0]?.id ?? null);
   const [input, setInput]             = useState('');
   const [loading, setLoading]         = useState(false);
-  const [model, setModel]             = useState('llama-3-8b');
   const [showPipeline, setShowPipeline] = useState(false);
   const [pipelineCacheHit, setPipelineCacheHit] = useState(false);
+  const [stats, setStats]             = useState(null);
   const pendingMsg    = useRef(null);   // buffer API response during animation
   const pendingChatId = useRef(null);
   const animDone      = useRef(false);  // true once pipeline animation completes
@@ -524,6 +458,16 @@ export default function Chat() {
   const textareaRef    = useRef(null);
 
   const activeChat = chats.find(c => c.id === activeChatId) ?? null;
+
+  // Fetch stats
+  const fetchStats = useCallback(async () => {
+    try {
+      const s = await fetch('/stats').then(r => r.json());
+      setStats(s);
+    } catch {}
+  }, []);
+
+  useEffect(() => { fetchStats(); }, [fetchStats]);
 
   // Persist
   useEffect(() => saveChats(chats), [chats]);
@@ -567,7 +511,8 @@ export default function Chat() {
         ? { ...c, messages: [...c.messages, msg], updatedAt: Date.now() }
         : c
     ));
-  }, []);
+    fetchStats();
+  }, [fetchStats]);
 
   // Called when the pipeline animation finishes
   const onPipelineComplete = useCallback(() => {
@@ -678,7 +623,7 @@ export default function Chat() {
 
         {/* Top bar */}
         <div style={{
-          padding: '14px 24px',
+          padding: '10px 24px',
           borderBottom: '1px solid rgba(255,255,255,0.05)',
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           background: 'rgba(8,12,20,0.8)', backdropFilter: 'blur(12px)',
@@ -687,14 +632,33 @@ export default function Chat() {
           <div style={{ fontSize: 14, fontWeight: 500, color: '#94a3b8' }}>
             {activeChat ? activeChat.title : 'inferOpt Chat'}
           </div>
-          <ModelSelector value={model} onChange={setModel} />
+          {stats && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 18 }}>
+              {[
+                { icon: Zap,          color: '#06b6d4', label: 'Tokens Saved', value: stats.total_tokens_saved ?? 0 },
+                { icon: Activity,     color: '#6366f1', label: 'Requests',     value: stats.total_requests ?? 0 },
+                { icon: Database,     color: '#10b981', label: 'Hit Rate',     value: stats.cache_hit_rate != null ? `${Math.round(stats.cache_hit_rate * 100)}%` : '—' },
+                { icon: TrendingDown, color: '#8b5cf6', label: 'Avg Savings',  value: stats.average_savings_ratio != null ? `${Math.round(stats.average_savings_ratio * 100)}%` : '—' },
+              ].map(m => (
+                <div key={m.label} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                  <m.icon size={13} color={m.color} />
+                  <span style={{ fontSize: 11, color: '#475569', fontFamily: 'JetBrains Mono, monospace' }}>
+                    {m.label}
+                  </span>
+                  <span style={{ fontSize: 12, color: m.color, fontWeight: 600, fontFamily: 'JetBrains Mono, monospace' }}>
+                    {m.value}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Messages */}
-        <div style={{ flex: 1, overflowY: 'auto', padding: '32px 10%' }}>
+        <div style={{ flex: 1, overflowY: 'auto', padding: '16px 10%' }}>
           {!activeChat || activeChat.messages.length === 0 ? (
             /* ── Empty state ── */
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: '12vh' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: '6vh' }}>
               <div style={{
                 width: 52, height: 52, borderRadius: 14, marginBottom: 20,
                 background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
@@ -743,7 +707,7 @@ export default function Chat() {
 
         {/* ── Input area ── */}
         <div style={{
-          padding: '16px 10%',
+          padding: '10px 10%',
           background: 'rgba(8,12,20,0.9)',
           borderTop: '1px solid rgba(255,255,255,0.05)',
         }}>
