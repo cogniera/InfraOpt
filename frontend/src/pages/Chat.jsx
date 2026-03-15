@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import {
   Plus, MessageSquare, Trash2, Send, Zap,
   Sparkles, Copy, Check,
@@ -270,7 +272,33 @@ function Message({ msg }) {
           whiteSpace: 'pre-wrap',
           wordBreak: 'break-word',
         }}>
-          {msg.content}
+          {isUser ? msg.content : (
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={{
+                p: ({ children }) => <p style={{ margin: '0 0 8px' }}>{children}</p>,
+                strong: ({ children }) => <strong style={{ color: '#e2e8f0', fontWeight: 600 }}>{children}</strong>,
+                em: ({ children }) => <em style={{ color: '#cbd5e1' }}>{children}</em>,
+                code: ({ inline, children }) => inline
+                  ? <code style={{ background: 'rgba(255,255,255,0.08)', padding: '1px 5px', borderRadius: 4, fontSize: 12, fontFamily: 'JetBrains Mono, monospace', color: '#a5b4fc' }}>{children}</code>
+                  : <code>{children}</code>,
+                pre: ({ children }) => <pre style={{ background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8, padding: 12, overflowX: 'auto', fontSize: 12, fontFamily: 'JetBrains Mono, monospace', margin: '8px 0' }}>{children}</pre>,
+                ul: ({ children }) => <ul style={{ margin: '4px 0', paddingLeft: 20 }}>{children}</ul>,
+                ol: ({ children }) => <ol style={{ margin: '4px 0', paddingLeft: 20 }}>{children}</ol>,
+                li: ({ children }) => <li style={{ marginBottom: 2 }}>{children}</li>,
+                h1: ({ children }) => <h1 style={{ fontSize: 20, fontWeight: 700, color: '#e2e8f0', margin: '12px 0 6px' }}>{children}</h1>,
+                h2: ({ children }) => <h2 style={{ fontSize: 17, fontWeight: 700, color: '#e2e8f0', margin: '10px 0 4px' }}>{children}</h2>,
+                h3: ({ children }) => <h3 style={{ fontSize: 15, fontWeight: 600, color: '#e2e8f0', margin: '8px 0 4px' }}>{children}</h3>,
+                a: ({ href, children }) => <a href={href} target="_blank" rel="noopener noreferrer" style={{ color: '#818cf8', textDecoration: 'underline' }}>{children}</a>,
+                blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid rgba(99,102,241,0.4)', paddingLeft: 12, margin: '8px 0', color: '#94a3b8' }}>{children}</blockquote>,
+                table: ({ children }) => <table style={{ borderCollapse: 'collapse', width: '100%', margin: '8px 0', fontSize: 13 }}>{children}</table>,
+                th: ({ children }) => <th style={{ border: '1px solid rgba(255,255,255,0.1)', padding: '4px 8px', textAlign: 'left', color: '#e2e8f0', fontWeight: 600 }}>{children}</th>,
+                td: ({ children }) => <td style={{ border: '1px solid rgba(255,255,255,0.1)', padding: '4px 8px' }}>{children}</td>,
+              }}
+            >
+              {msg.content}
+            </ReactMarkdown>
+          )}
         </div>
 
         {/* Stitch panel — only on assistant messages with stitch data */}
