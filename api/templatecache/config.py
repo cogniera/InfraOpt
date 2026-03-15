@@ -2,6 +2,10 @@
 
 import os
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 # HuggingFace Inference Endpoint — primary LLM provider
 USE_HF_LLM: bool = os.getenv("USE_HF_LLM", "true").lower() in ("true", "1", "yes")
 HF_ENDPOINT_URL: str = os.getenv("HF_ENDPOINT_URL", "https://qyt7893blb71b5d3.us-east-2.aws.endpoints.huggingface.cloud/v1")
@@ -11,7 +15,7 @@ HF_API_TOKEN: str = os.getenv("HF_API_TOKEN", "")
 INTENT_SIMILARITY_THRESHOLD: float = 0.90
 
 # Slot confidence
-SLOT_CONFIDENCE_THRESHOLD: float = 0.50 if USE_LOCAL_EMBEDDINGS else 0.85
+SLOT_CONFIDENCE_THRESHOLD: float = 0.85
 
 # Per-type confidence thresholds — overrides SLOT_CONFIDENCE_THRESHOLD per slot type.
 # SLOT_CONFIDENCE_THRESHOLD remains the fallback for any type not in this dict.
@@ -41,7 +45,7 @@ SLOT_TRANSFER_PENALTY: float = 0.15  # subtracted from similarity when transferr
 
 # Confidence-weighted response blending
 SLOT_BLEND_ENABLED: bool = True
-SLOT_BLEND_THRESHOLD: float = 0.65 if USE_LOCAL_EMBEDDINGS else 0.92  # above this: serve cached directly
+SLOT_BLEND_THRESHOLD: float = 0.92  # above this: serve cached directly
 
 # Gap pattern learning
 GAP_LEARNING_ENABLED: bool = True
