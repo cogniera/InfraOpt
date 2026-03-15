@@ -2,20 +2,16 @@
 
 import os
 
-# Local embeddings — set USE_LOCAL_EMBEDDINGS=true in .env to skip API calls
-USE_LOCAL_EMBEDDINGS: bool = os.getenv("USE_LOCAL_EMBEDDINGS", "false").lower() in ("true", "1", "yes")
-LOCAL_EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"
+# HuggingFace Inference Endpoint — primary LLM provider
+USE_HF_LLM: bool = os.getenv("USE_HF_LLM", "true").lower() in ("true", "1", "yes")
+HF_ENDPOINT_URL: str = os.getenv("HF_ENDPOINT_URL", "https://qyt7893blb71b5d3.us-east-2.aws.endpoints.huggingface.cloud/v1")
+HF_API_TOKEN: str = os.getenv("HF_API_TOKEN", "")
 
-# Local LLM — set USE_LOCAL_LLM=true in .env to use Ollama instead of Gemini
-USE_LOCAL_LLM: bool = os.getenv("USE_LOCAL_LLM", "false").lower() in ("true", "1", "yes")
-OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "gemma3:4b")
-OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-
-# Intent matching — local models produce lower scores, so use a lower threshold
-INTENT_SIMILARITY_THRESHOLD: float = 0.55 if USE_LOCAL_EMBEDDINGS else 0.90
+# Intent matching
+INTENT_SIMILARITY_THRESHOLD: float = 0.90
 
 # Slot confidence
-SLOT_CONFIDENCE_THRESHOLD: float = 0.50 if USE_LOCAL_EMBEDDINGS else 0.85
+SLOT_CONFIDENCE_THRESHOLD: float = 0.85
 UNCERTAIN_SLOT_FALLBACK_RATIO: float = 0.5
 
 # Gap detection — how well must the cached response match the query?
@@ -26,7 +22,7 @@ RESPONSE_RELEVANCE_THRESHOLD: float = 0.35  # whole-query relevance
 CONFIDENCE_DECAY_FACTOR: float = 0.95
 CONFIDENCE_DECAY_DAYS: int = 30
 
-# Model names
+# Model names (Gemini — used for embeddings)
 EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "gemini-embedding-001")
 LLM_MODEL: str = os.getenv("LLM_MODEL", "gemini-2.0-flash")
 
@@ -38,4 +34,3 @@ VARIANT_DETAILED_MIN_TOKENS: int = 200
 REDIS_HOST: str = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT: int = int(os.getenv("REDIS_PORT", "6379"))
 REDIS_DB: int = int(os.getenv("REDIS_DB", "0"))
-

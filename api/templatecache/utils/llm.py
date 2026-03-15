@@ -7,10 +7,10 @@ from typing import Optional
 import httpx
 
 from templatecache.config import (
+    HF_API_TOKEN,
+    HF_ENDPOINT_URL,
     LLM_MODEL,
-    OLLAMA_BASE_URL,
-    OLLAMA_MODEL,
-    USE_LOCAL_LLM,
+    USE_HF_LLM,
 )
 
 logger = logging.getLogger(__name__)
@@ -28,33 +28,36 @@ def _get_gemini_client():
     return _gemini_client
 
 
-async def _ollama_call(prompt: str, max_tokens: int) -> str:
-    """Call local Ollama instance for LLM generation.
+async def _huggingface_call(prompt: str, max_tokens: int) -> str:
+    """Call HuggingFace inference endpoint for LLM generation.
 
     Args:
         prompt: The prompt to send.
         max_tokens: Maximum number of tokens in the response.
 
     Returns:
-        The generated text from Ollama.
+        The generated text from the HuggingFace endpoint.
 
     Side effects:
-        Makes an HTTP call to the local Ollama server.
+        Makes an HTTP call to the HuggingFace inference endpoint.
     """
-    url = f"{OLLAMA_BASE_URL}/api/generate"
+    url = f"{HF_ENDPOINT_URL}/chat/completions"
+    headers = {
+        "Content-Type": "application/json",
+    }
+    if HF_API_TOKEN:
+        headers["Authorization"] = f"Bearer {HF_API_TOKEN}"
+
     payload = {
-        "model": OLLAMA_MODEL,
-        "prompt": prompt,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": max_tokens,
         "stream": False,
-        "options": {
-            "num_predict": max_tokens,
-        },
     }
     async with httpx.AsyncClient(timeout=120.0) as client:
-        resp = await client.post(url, json=payload)
+        resp = await client.post(url, json=payload, headers=headers)
         resp.raise_for_status()
         data = resp.json()
-        return data.get("response", "")
+        return data["choices"][0]["message"]["content"]
 
 
 async def _gemini_call(prompt: str, max_tokens: int) -> str:
@@ -93,9 +96,8 @@ async def llm_call(prompt: str, max_tokens: int) -> str:
         The LLM response text.
 
     Side effects:
-        Makes an API call to Ollama (local) or Google Gemini (remote).
+        Makes an API call to HuggingFace endpoint or Google Gemini.
     """
-    if USE_LOCAL_LLM:
-        return await _ollama_call(prompt, max_tokens)
+    if USE_HF_LLM:
+        return await _huggingface_call(prompt, max_tokens)
     return await _gemini_call(prompt, max_tokens)
-
