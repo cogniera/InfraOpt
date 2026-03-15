@@ -491,9 +491,9 @@ function DashboardPanel({ stats, history, onClose }) {
     : '';
 
   // ── Cost estimate ──
-  const scaledTokens = (stats.total_tokens_saved ?? 0) * 100000;
+  const totalTokens = stats.total_tokens_saved ?? 0;
   const dollarPerMillion = 10;
-  const totalDollar = (scaledTokens / 1000000) * dollarPerMillion;
+  const totalDollar = (totalTokens / 1000000) * dollarPerMillion;
   const savedDollar = (stats.average_savings_ratio ?? 0) * totalDollar;
 
   // Y-axis tick values
@@ -638,7 +638,7 @@ function DashboardPanel({ stats, history, onClose }) {
               ${savedDollar.toFixed(2)}
             </div>
             <div style={{ fontSize: 12, color: '#64748b', lineHeight: 1.6 }}>
-              At production scale ({scaledTokens.toLocaleString()} tokens), with a{' '}
+              Based on {totalTokens.toLocaleString()} tokens, with a{' '}
               <span style={{ color: '#8b5cf6', fontWeight: 600 }}>{pct(stats.average_savings_ratio)}</span>{' '}
               avg savings ratio and{' '}
               <span style={{ color: '#06b6d4', fontWeight: 600 }}>${dollarPerMillion}/1M tokens</span>,{' '}
