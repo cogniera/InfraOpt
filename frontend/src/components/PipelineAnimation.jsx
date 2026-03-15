@@ -7,9 +7,6 @@ const ROT_Y = 0.15;
 const FOV   = 1000;
 const SCALE = 100;
 
-// Camera state — mutated each frame by the camera tracking system
-const cam = { x: 0, y: 0, zoom: 1 };
-
 function project(wx, wy, wz, W, H) {
   const cy = Math.cos(ROT_Y), sy = Math.sin(ROT_Y);
   const x1 =  wx * cy + wz * sy;
@@ -18,45 +15,7 @@ function project(wx, wy, wz, W, H) {
   const y2 =  wy * cx - z1 * sx;
   const z2 =  wy * sx + z1 * cx;
   const sc = FOV / (FOV + z2 * SCALE);
-  // Apply camera: offset then zoom around screen centre
-  const rawX = W / 2 + x1 * SCALE * sc;
-  const rawY = H / 2 + y2 * SCALE * sc;
-  const sx2 = (rawX - W / 2 - cam.x) * cam.zoom + W / 2;
-  const sy2 = (rawY - H / 2 - cam.y) * cam.zoom + H / 2;
-  return { x: sx2, y: sy2, sc: sc * cam.zoom, z: z2 };
-}
-
-// ─── Camera tracking ──────────────────────────────────────────────────────────
-// Maps animation time → which world-space point the camera should look at + zoom
-function getCameraTarget(t, stages, cacheHit) {
-  // Each entry: [worldY, zoom]  (worldX is always 0 for the spine)
-  // We focus on the node that is currently "active" and zoom in slightly
-  if (t < stages.flowSplit[0])      return { wy: -2.5, wx: 0,    zoom: 1.45 }; // Input
-  if (t < stages.splitCheck[1])     return { wy: -1.5, wx: 0,    zoom: 1.40 }; // Split
-  if (t < stages.flowRouter[0])     return { wy: -0.4, wx: 0,    zoom: 1.40 }; // Embed
-  if (t < stages.routerResult[1])   return { wy:  0.7, wx: 0,    zoom: 1.35 }; // Router
-
-  if (!cacheHit) {
-    if (stages.flowLLM && t < stages.done) return { wy: 1.9, wx: 1.9, zoom: 1.30 }; // LLM
-  } else {
-    if (stages.flowSlot && t < (stages.gapDetect?.[0] ?? stages.done))
-      return { wy: 1.9, wx: -1.9, zoom: 1.30 }; // SlotEngine sphere
-    if (stages.gapDetect && t < stages.done)
-      return { wy: 2.8, wx: 0,    zoom: 1.20 }; // Slot fill section (lower)
-  }
-  return { wy: 0, wx: 0, zoom: 1.0 };
-}
-
-// Smooth-damp helper (critically damped spring for butter-smooth follow)
-function smoothDamp(current, target, vel, smoothTime, dt) {
-  const omega = 2 / smoothTime;
-  const x = omega * dt;
-  const exp = 1 / (1 + x + 0.48 * x * x + 0.235 * x * x * x);
-  const change = current - target;
-  const temp = (vel + omega * change) * dt;
-  const newVel = (vel - omega * temp) * exp;
-  const newVal = target + (change + temp) * exp;
-  return { val: newVal, vel: newVel };
+  return { x: W / 2 + x1 * SCALE * sc, y: H / 2 + y2 * SCALE * sc, sc, z: z2 };
 }
 
 // ─── Node world positions ──────────────────────────────────────────────────────
@@ -452,9 +411,6 @@ function drawProgress(ctx, W, H, t, total) {
 // ─── Main component ───────────────────────────────────────────────────────────
 export default function PipelineAnimation({ visible, cacheHit=false, onComplete }) {
   const canvasRef=useRef(null);
-  // Live ref so the draw loop always reads the latest cacheHit without restarting
-  const cacheHitRef=useRef(cacheHit);
-  cacheHitRef.current=cacheHit;
 
   useEffect(()=>{
     if(!visible) return;
@@ -465,54 +421,16 @@ export default function PipelineAnimation({ visible, cacheHit=false, onComplete 
     const resize=()=>{ canvas.width=window.innerWidth; canvas.height=window.innerHeight; };
     resize(); window.addEventListener('resize',resize);
 
-    // Reset camera for fresh animation
-    cam.x = 0; cam.y = 0; cam.zoom = 1;
-
-    // Pre-compute both stage timelines — pick the right one each frame
-    const S_HIT  = makeStages(true);
-    const S_MISS = makeStages(false);
-
-    // Camera velocity state (for smooth-damp)
-    let camVelX = 0, camVelY = 0, camVelZ = 0;
-    const CAM_SMOOTH = 0.65; // seconds — lower = snappier, higher = smoother
-    let lastTs = null;
+    const S=makeStages(cacheHit);
 
     function N(W,H){ return Object.fromEntries(Object.entries(NP).map(([k,v])=>[k,project(...v,W,H)])); }
 
     function draw(ts){
       if(!startTime) startTime=ts;
       const t=(ts-startTime)/1000;
-      const dt = lastTs ? (ts - lastTs) / 1000 : 0.016;
-      lastTs = ts;
-
-      // Read live cacheHit and pick correct stage timeline
-      const hit = cacheHitRef.current;
-      const S = hit ? S_HIT : S_MISS;
-
       if(!completed && t>=S.done){ completed=true; onComplete?.(); cancelAnimationFrame(animId); return; }
 
       const W=canvas.width, H=canvas.height;
-
-      // ── Update camera ─────────────────────────────────────────────────
-      const target = getCameraTarget(t, S, hit);
-      // Convert target world pos to raw screen offset (before camera transform)
-      const cy2 = Math.cos(ROT_Y), sy2 = Math.sin(ROT_Y);
-      const tx1 = target.wx * cy2;
-      const tz1 = -target.wx * sy2;
-      const cx2 = Math.cos(ROT_X), sx2 = Math.sin(ROT_X);
-      const ty2 = target.wy * cx2 - tz1 * sx2;
-      const tz2 = target.wy * sx2 + tz1 * cx2;
-      const tsc = FOV / (FOV + tz2 * SCALE);
-      const targetScreenX = tx1 * SCALE * tsc;
-      const targetScreenY = ty2 * SCALE * tsc;
-
-      const dxR = smoothDamp(cam.x, targetScreenX, camVelX, CAM_SMOOTH, dt);
-      const dyR = smoothDamp(cam.y, targetScreenY, camVelY, CAM_SMOOTH, dt);
-      const dzR = smoothDamp(cam.zoom, target.zoom, camVelZ, CAM_SMOOTH, dt);
-      cam.x = dxR.val; camVelX = dxR.vel;
-      cam.y = dyR.val; camVelY = dyR.vel;
-      cam.zoom = dzR.val; camVelZ = dzR.vel;
-
       const n=N(W,H);
       const R=BASE_R;
 
@@ -523,11 +441,8 @@ export default function PipelineAnimation({ visible, cacheHit=false, onComplete 
       ctx.strokeStyle='rgba(99,102,241,0.04)';
       ctx.lineWidth=1;
       const GS=55;
-      // Parallax: grid drifts at half camera speed for depth feel
-      const gridOffX = (-cam.x * (cam.zoom - 1) * 0.5) % GS;
-      const gridOffY = (-cam.y * (cam.zoom - 1) * 0.5) % GS;
-      for(let x=gridOffX;x<W;x+=GS){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke();}
-      for(let y=gridOffY;y<H;y+=GS){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();}
+      for(let x=0;x<W;x+=GS){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke();}
+      for(let y=0;y<H;y+=GS){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();}
       ctx.restore();
 
       // ── Scene title ──────────────────────────────────────────────────────
@@ -548,7 +463,7 @@ export default function PipelineAnimation({ visible, cacheHit=false, onComplete 
       let routerCol=COL.neutral;
       if(t>=S.routerResult[0]){
         const rp=ease(sp(t,S.routerResult[0],S.routerResult[1]));
-        routerCol=lerpCol(COL.neutral, hit ? COL.routerHit : COL.routerMiss, rp);
+        routerCol=lerpCol(COL.neutral, cacheHit ? COL.routerHit : COL.routerMiss, rp);
       }
 
       // ── Stage label ──────────────────────────────────────────────────────
@@ -558,10 +473,10 @@ export default function PipelineAnimation({ visible, cacheHit=false, onComplete 
       else if(t < S.flowEmbed[0])      stageLabel='Query split analysis complete';
       else if(t < S.flowRouter[0])     stageLabel='Embedding query vector';
       else if(t < S.routerResult[0])   stageLabel='Searching intent centroids…';
-      else if(!hit && t<S.done-1)      stageLabel='Cache miss — running full LLM + extracting template';
-      else if(hit && S.gapDetect && t>=S.gapDetect[0] && t<S.slotFill[0])
+      else if(!cacheHit && t<S.done-1) stageLabel='Cache miss — running full LLM + extracting template';
+      else if(cacheHit && S.gapDetect && t>=S.gapDetect[0] && t<S.slotFill[0])
                                         stageLabel='Detecting gaps in cached template';
-      else if(hit && S.slotFill && t>=S.slotFill[0])
+      else if(cacheHit && S.slotFill && t>=S.slotFill[0])
                                         stageLabel='SlotEngine — filling template from cache + LLM';
 
       // ── Tubes (behind spheres) ───────────────────────────────────────────
@@ -578,12 +493,12 @@ export default function PipelineAnimation({ visible, cacheHit=false, onComplete 
       if(t>=S.flowRouter[0]) drawTubeParticles(ctx,n.embed,n.router,t,[99,102,241],sp(t,S.flowRouter[0],S.flowRouter[1]));
 
       // Branch connectors
-      if(!hit && S.flowLLM){
+      if(!cacheHit && S.flowLLM){
         const cp={x:(n.router.x+n.llm.x)/2, y:n.router.y+30};
         drawCurvedTube(ctx, n.router, n.llm, cp, [239,68,68], sp(t,S.flowLLM[0],S.flowLLM[1]));
         if(t>=S.flowLLM[0]) drawTubeParticles(ctx,n.router,n.llm,t,[239,68,68],sp(t,S.flowLLM[0],S.flowLLM[1]));
       }
-      if(hit && S.flowSlot){
+      if(cacheHit && S.flowSlot){
         const cp={x:(n.router.x+n.slot.x)/2, y:n.router.y+30};
         drawCurvedTube(ctx, n.router, n.slot, cp, [16,185,129], sp(t,S.flowSlot[0],S.flowSlot[1]));
         if(t>=S.flowSlot[0]) drawTubeParticles(ctx,n.router,n.slot,t,[16,185,129],sp(t,S.flowSlot[0],S.flowSlot[1]));
@@ -639,27 +554,27 @@ export default function PipelineAnimation({ visible, cacheHit=false, onComplete 
       // Intent Router sphere
       const routerA=ease(sp(t,4.1,5.0));
       if(routerA>0){
-        const routerLabel=t>=S.routerResult[0]?(hit?'Hit ✓':'Miss ✗'):'Router';
+        const routerLabel=t>=S.routerResult[0]?(cacheHit?'Hit ✓':'Miss ✗'):'Router';
         const routerSub=t>=S.routerSearch[0]&&t<S.routerResult[0]?'searching…':'cosine sim';
         drawSphere(ctx, n.router.x, n.router.y, R*n.router.sc, routerCol, routerLabel, routerSub, routerA);
         if(t>=S.routerSearch[0]&&t<S.routerResult[0]) drawSearchRing(ctx,n.router.x,n.router.y,R*n.router.sc,t);
       }
 
       // LLM sphere (cache miss)
-      if(!hit && S.flowLLM && t>=S.flowLLM[0]){
+      if(!cacheHit && S.flowLLM && t>=S.flowLLM[0]){
         const ga=ease(sp(t,S.flowLLM[0],S.flowLLM[0]+0.9));
         drawSphere(ctx,n.llm.x,n.llm.y,R*n.llm.sc,COL.generate,'LLM','full gen',ga);
         if(t>=S.llmGen[0]) drawGenerating(ctx,n.llm.x,n.llm.y,R*n.llm.sc,t-S.llmGen[0]);
       }
 
       // Slot Engine sphere (cache hit)
-      if(hit && S.flowSlot && t>=S.flowSlot[0]){
+      if(cacheHit && S.flowSlot && t>=S.flowSlot[0]){
         const ca=ease(sp(t,S.flowSlot[0],S.flowSlot[0]+0.9));
         drawSphere(ctx,n.slot.x,n.slot.y,R*n.slot.sc,COL.slotNode,'SlotEngine','filling…',ca);
       }
 
       // Slot fill visualization
-      if(hit && S.gapDetect && t>=S.gapDetect[0]) drawSlotSection(ctx,W,H,t,S);
+      if(cacheHit && S.gapDetect && t>=S.gapDetect[0]) drawSlotSection(ctx,W,H,t,S);
 
       // Stage label
       if(stageLabel){
@@ -678,7 +593,7 @@ export default function PipelineAnimation({ visible, cacheHit=false, onComplete 
 
     animId=requestAnimationFrame(draw);
     return ()=>{ cancelAnimationFrame(animId); window.removeEventListener('resize',resize); };
-  },[visible,onComplete]);
+  },[visible,cacheHit,onComplete]);
 
   return (
     <AnimatePresence>
