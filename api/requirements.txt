@@ -9,8 +9,8 @@ httpx>=0.25.0
 sentence-transformers>=3.0.0
 numpy>=1.24.0
 
-# LLM (remote — only needed when USE_LOCAL_LLM=false)
-google-genai>=1.0.0
+# LLM (OpenAI-compatible endpoint)
+openai>=1.0.0
 
 # Testing
 pytest>=7.4.0
