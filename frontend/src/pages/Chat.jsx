@@ -1,9 +1,9 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import {
   Plus, MessageSquare, Trash2, Send, Zap,
   Sparkles, Copy, Check,
-  Activity, Database, TrendingDown,
+  Activity, Database, TrendingDown, BarChart3, X,
 } from 'lucide-react';
 import PipelineAnimation from '../components/PipelineAnimation.jsx';
 
@@ -442,6 +442,237 @@ function ChatSidebar({ chats, activeChatId, onSelect, onNew, onDelete }) {
   );
 }
 
+// ── Right-side dashboard panel ────────────────────────────────────────────────
+function DashboardPanel({ stats, history, onClose }) {
+  if (!stats) return null;
+
+  const pct = v => (v == null || v === '—') ? '—' : `${Math.round(v * 100)}%`;
+  const points = history || [];
+
+  // ── Chart: Tokens saved per prompt ──
+  const W = 340, H = 150, PAD = 28;
+  const MAX_Y = 10000;
+  const toX = (i) => PAD + (i / Math.max(1, points.length - 1)) * (W - PAD - 8);
+  const toY = (v) => H - PAD - (Math.min(v, MAX_Y) / MAX_Y) * (H - PAD - 12);
+
+  const linePath = points.length > 1
+    ? points.map((p, i) => `${i === 0 ? 'M' : 'L'}${toX(i).toFixed(1)},${toY(p.tokens_saved).toFixed(1)}`).join(' ')
+    : '';
+  const areaPath = linePath
+    ? `${linePath} L${toX(points.length - 1).toFixed(1)},${(H - PAD).toFixed(1)} L${toX(0).toFixed(1)},${(H - PAD).toFixed(1)} Z`
+    : '';
+
+  // ── Cost estimate ──
+  const scaledTokens = (stats.total_tokens_saved ?? 0) * 100000;
+  const dollarPerMillion = 10;
+  const totalDollar = (scaledTokens / 1000000) * dollarPerMillion;
+  const savedDollar = (stats.average_savings_ratio ?? 0) * totalDollar;
+
+  // Y-axis tick values
+  const cumulTicks = [0, 2500, 5000, 7500, 10000];
+
+  const cardStyle = {
+    padding: '14px 16px', borderRadius: 12,
+    background: 'rgba(255,255,255,0.03)',
+    border: '1px solid rgba(255,255,255,0.07)',
+  };
+  const mono = { fontFamily: 'JetBrains Mono, monospace' };
+
+  return (
+    <motion.aside
+      initial={{ x: 340, opacity: 0 }}
+      animate={{ x: 0, opacity: 1 }}
+      exit={{ x: 340, opacity: 0 }}
+      transition={{ type: 'spring', damping: 28, stiffness: 300 }}
+      style={{
+        width: 360, minWidth: 360, height: '100vh',
+        background: 'rgba(5, 8, 16, 0.97)',
+        borderLeft: '1px solid rgba(255,255,255,0.06)',
+        display: 'flex', flexDirection: 'column',
+        position: 'relative', overflowY: 'auto',
+        overflowX: 'hidden',
+      }}
+    >
+      {/* Header */}
+      <div style={{
+        padding: '18px 20px 14px',
+        borderBottom: '1px solid rgba(255,255,255,0.06)',
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        position: 'sticky', top: 0, background: 'rgba(5,8,16,0.97)', zIndex: 2,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <BarChart3 size={16} color="#6366f1" />
+          <span style={{ fontSize: 15, fontWeight: 700, color: '#e2e8f0', letterSpacing: '-0.3px' }}>Dashboard</span>
+        </div>
+        <button onClick={onClose} style={{
+          background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)',
+          borderRadius: 8, width: 28, height: 28, cursor: 'pointer',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          color: '#64748b', transition: 'all 0.15s',
+        }}
+        onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.1)'; e.currentTarget.style.color = '#e2e8f0'; }}
+        onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; e.currentTarget.style.color = '#64748b'; }}
+        >
+          <X size={14} />
+        </button>
+      </div>
+
+      <div style={{ padding: '16px 16px 20px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+
+        {/* ── Stat cards grid ── */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          {[
+            { icon: Zap,          color: '#06b6d4', bg: 'rgba(6,182,212,0.08)',  label: 'Tokens Saved', value: stats.total_tokens_saved ?? 0 },
+            { icon: Activity,     color: '#6366f1', bg: 'rgba(99,102,241,0.08)', label: 'Requests',     value: stats.total_requests ?? 0 },
+            { icon: Database,     color: '#10b981', bg: 'rgba(16,185,129,0.08)', label: 'Hit Rate',     value: pct(stats.cache_hit_rate) },
+            { icon: TrendingDown, color: '#8b5cf6', bg: 'rgba(139,92,246,0.08)', label: 'Avg Savings',  value: pct(stats.average_savings_ratio) },
+          ].map(s => (
+            <div key={s.label} style={{
+              padding: '14px 12px', borderRadius: 12,
+              background: 'rgba(255,255,255,0.03)',
+              border: '1px solid rgba(255,255,255,0.07)',
+            }}>
+              <div style={{
+                width: 32, height: 32, borderRadius: 9, marginBottom: 10,
+                background: s.bg, display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}>
+                <s.icon size={16} color={s.color} />
+              </div>
+              <div style={{ fontSize: 10, color: '#475569', ...mono, marginBottom: 2 }}>{s.label}</div>
+              <div style={{ fontSize: 20, fontWeight: 700, color: s.color, ...mono }}>{s.value}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* ── Tokens saved per prompt chart ── */}
+        {points.length > 1 && (
+          <div style={cardStyle}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8' }}>
+                Tokens Saved vs Prompts
+              </div>
+              <div style={{ fontSize: 9, color: '#334155', ...mono }}>max {(MAX_Y / 1000).toFixed(0)}k</div>
+            </div>
+            <svg width={W} height={H} style={{ display: 'block', width: '100%', height: 'auto' }} viewBox={`0 0 ${W} ${H}`}>
+              {/* Y-axis labels */}
+              {cumulTicks.map((v, i) => (
+                <g key={i}>
+                  <line x1={PAD} x2={W - 8} y1={toY(v)} y2={toY(v)} stroke="rgba(255,255,255,0.05)" strokeWidth={0.5} />
+                  <text x={PAD - 4} y={toY(v) + 3} textAnchor="end" fill="#334155" fontSize={8} fontFamily="JetBrains Mono, monospace">
+                    {v >= 1000 ? `${(v / 1000).toFixed(0)}k` : v}
+                  </text>
+                </g>
+              ))}
+              {/* Area */}
+              <path d={areaPath} fill="url(#dashAreaGrad)" />
+              {/* Line */}
+              <path d={linePath} fill="none" stroke="#06b6d4" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+              {/* Dots */}
+              {points.map((p, i) => (
+                <circle key={i} cx={toX(i)} cy={toY(p.tokens_saved)} r={3}
+                  fill={p.cache_hit ? '#10b981' : '#ef4444'} stroke="#080c14" strokeWidth={1.5} />
+              ))}
+              {/* X-axis labels (prompt numbers) */}
+              {points.filter((_, i) => i === 0 || i === points.length - 1 || points.length < 10).map((p) => (
+                <text key={p.request_number} x={toX(points.indexOf(p))} y={H - 6} textAnchor="middle" fill="#334155" fontSize={8} fontFamily="JetBrains Mono, monospace">
+                  Prompt {p.request_number}
+                </text>
+              ))}
+              <defs>
+                <linearGradient id="dashAreaGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#06b6d4" stopOpacity={0.15} />
+                  <stop offset="100%" stopColor="#06b6d4" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+            </svg>
+            <div style={{ display: 'flex', gap: 14, marginTop: 8, fontSize: 10, color: '#475569' }}>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#10b981', display: 'inline-block' }} /> Cache Hit
+              </span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#ef4444', display: 'inline-block' }} /> Cache Miss
+              </span>
+            </div>
+          </div>
+        )}
+
+        {/* ── Projected cost savings estimate ── */}
+        {stats.total_requests > 0 && (
+          <div style={{
+            ...cardStyle,
+            background: 'linear-gradient(135deg, rgba(16,185,129,0.06), rgba(6,182,212,0.04))',
+            border: '1px solid rgba(16,185,129,0.15)',
+          }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8', marginBottom: 12 }}>
+              Projected Cost Savings
+            </div>
+            <div style={{ fontSize: 28, fontWeight: 700, color: '#10b981', ...mono, marginBottom: 6 }}>
+              ${savedDollar.toFixed(2)}
+            </div>
+            <div style={{ fontSize: 12, color: '#64748b', lineHeight: 1.6 }}>
+              At production scale ({scaledTokens.toLocaleString()} tokens), with a{' '}
+              <span style={{ color: '#8b5cf6', fontWeight: 600 }}>{pct(stats.average_savings_ratio)}</span>{' '}
+              avg savings ratio and{' '}
+              <span style={{ color: '#06b6d4', fontWeight: 600 }}>${dollarPerMillion}/1M tokens</span>,{' '}
+              inferOpt would save an estimated{' '}
+              <span style={{ color: '#10b981', fontWeight: 600 }}>${savedDollar.toFixed(2)}</span>{' '}
+              out of <span style={{ color: '#94a3b8', fontWeight: 600 }}>${totalDollar.toFixed(2)}</span> total.
+            </div>
+          </div>
+        )}
+
+        {/* ── Recent requests table ── */}
+        {points.length > 0 && (
+          <div style={cardStyle}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: '#94a3b8', marginBottom: 10 }}>
+              Recent Requests
+            </div>
+            <div style={{ maxHeight: 180, overflowY: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11, ...mono }}>
+                <thead>
+                  <tr>
+                    {['#', 'Prompt', 'Saved', 'Status'].map(h => (
+                      <th key={h} style={{ textAlign: 'left', color: '#334155', fontWeight: 500, padding: '4px 6px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {[...points].reverse().slice(0, 20).map(p => (
+                    <tr key={p.request_number}>
+                      <td style={{ padding: '4px 6px', color: '#475569' }}>{p.request_number}</td>
+                      <td style={{ padding: '4px 6px', color: '#94a3b8', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.prompt || '—'}</td>
+                      <td style={{ padding: '4px 6px', color: '#06b6d4', fontWeight: 600 }}>{p.tokens_saved}</td>
+                      <td style={{ padding: '4px 6px' }}>
+                        <span style={{
+                          fontSize: 9, fontWeight: 600, padding: '1px 5px', borderRadius: 4,
+                          background: p.cache_hit ? 'rgba(16,185,129,0.12)' : 'rgba(239,68,68,0.10)',
+                          color: p.cache_hit ? '#10b981' : '#ef4444',
+                          border: `1px solid ${p.cache_hit ? 'rgba(16,185,129,0.25)' : 'rgba(239,68,68,0.2)'}`,
+                        }}>
+                          {p.cache_hit ? 'HIT' : 'MISS'}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* Empty state */}
+        {points.length === 0 && (
+          <div style={{ textAlign: 'center', padding: '40px 20px', color: '#334155', fontSize: 13 }}>
+            <BarChart3 size={28} color="#1e293b" style={{ marginBottom: 10 }} />
+            <div>No requests yet.</div>
+            <div style={{ fontSize: 11, marginTop: 4 }}>Send a message to see metrics here.</div>
+          </div>
+        )}
+      </div>
+    </motion.aside>
+  );
+}
+
 // ── Main export ───────────────────────────────────────────────────────────────
 export default function Chat() {
   const [chats, setChats]             = useState(loadChats);
@@ -451,6 +682,8 @@ export default function Chat() {
   const [showPipeline, setShowPipeline] = useState(false);
   const [pipelineCacheHit, setPipelineCacheHit] = useState(false);
   const [stats, setStats]             = useState(null);
+  const [history, setHistory]         = useState([]);
+  const [showDashboard, setShowDashboard] = useState(false);
   const pendingMsg    = useRef(null);   // buffer API response during animation
   const pendingChatId = useRef(null);
   const animDone      = useRef(false);  // true once pipeline animation completes
@@ -459,11 +692,15 @@ export default function Chat() {
 
   const activeChat = chats.find(c => c.id === activeChatId) ?? null;
 
-  // Fetch stats
+  // Fetch stats + history
   const fetchStats = useCallback(async () => {
     try {
-      const s = await fetch('/stats').then(r => r.json());
+      const [s, h] = await Promise.all([
+        fetch('/stats').then(r => r.json()),
+        fetch('/stats/history').then(r => r.json()),
+      ]);
       setStats(s);
+      setHistory(h);
     } catch {}
   }, []);
 
@@ -632,26 +869,39 @@ export default function Chat() {
           <div style={{ fontSize: 14, fontWeight: 500, color: '#94a3b8' }}>
             {activeChat ? activeChat.title : 'inferOpt Chat'}
           </div>
-          {stats && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 18 }}>
-              {[
-                { icon: Zap,          color: '#06b6d4', label: 'Tokens Saved', value: stats.total_tokens_saved ?? 0 },
-                { icon: Activity,     color: '#6366f1', label: 'Requests',     value: stats.total_requests ?? 0 },
-                { icon: Database,     color: '#10b981', label: 'Hit Rate',     value: stats.cache_hit_rate != null ? `${Math.round(stats.cache_hit_rate * 100)}%` : '—' },
-                { icon: TrendingDown, color: '#8b5cf6', label: 'Avg Savings',  value: stats.average_savings_ratio != null ? `${Math.round(stats.average_savings_ratio * 100)}%` : '—' },
-              ].map(m => (
-                <div key={m.label} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                  <m.icon size={13} color={m.color} />
-                  <span style={{ fontSize: 11, color: '#475569', fontFamily: 'JetBrains Mono, monospace' }}>
-                    {m.label}
-                  </span>
-                  <span style={{ fontSize: 12, color: m.color, fontWeight: 600, fontFamily: 'JetBrains Mono, monospace' }}>
-                    {m.value}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+            {stats && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <Zap size={12} color="#06b6d4" />
+                  <span style={{ fontSize: 11, color: '#06b6d4', fontWeight: 600, fontFamily: 'JetBrains Mono, monospace' }}>
+                    {stats.total_tokens_saved ?? 0} saved
                   </span>
                 </div>
-              ))}
-            </div>
-          )}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <Database size={12} color="#10b981" />
+                  <span style={{ fontSize: 11, color: '#10b981', fontWeight: 600, fontFamily: 'JetBrains Mono, monospace' }}>
+                    {stats.cache_hit_rate != null ? `${Math.round(stats.cache_hit_rate * 100)}%` : '—'} hit
+                  </span>
+                </div>
+              </div>
+            )}
+            <motion.button
+              whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
+              onClick={() => setShowDashboard(d => !d)}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 6,
+                background: showDashboard ? 'rgba(99,102,241,0.15)' : 'rgba(255,255,255,0.05)',
+                border: showDashboard ? '1px solid rgba(99,102,241,0.3)' : '1px solid rgba(255,255,255,0.1)',
+                borderRadius: 8, padding: '5px 10px',
+                color: showDashboard ? '#818cf8' : '#64748b', fontSize: 12, cursor: 'pointer',
+                fontFamily: 'JetBrains Mono, monospace', transition: 'all 0.15s',
+              }}
+            >
+              <BarChart3 size={13} />
+              Dashboard
+            </motion.button>
+          </div>
         </div>
 
         {/* Messages */}
@@ -759,6 +1009,17 @@ export default function Chat() {
           </div>
         </div>
       </div>
+
+      {/* ── Right dashboard panel ── */}
+      <AnimatePresence>
+        {showDashboard && (
+          <DashboardPanel
+            stats={stats}
+            history={history}
+            onClose={() => setShowDashboard(false)}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }
