@@ -6,15 +6,15 @@ from typing import Dict, List
 import httpx
 import numpy as np
 
-from templatecache.config import HF_API_TOKEN, HF_EMBEDDING_MODEL
+from templatecache.config import OPENAI_API_KEY, OPENAI_EMBEDDING_MODEL
 
 _cache: Dict[str, List[float]] = {}
 
-HF_INFERENCE_URL = f"https://api-inference.huggingface.co/models/{HF_EMBEDDING_MODEL}"
+OPENAI_EMBEDDING_URL = "https://api.openai.com/v1/embeddings"
 
 
 def _embed_single(text: str) -> List[float]:
-    """Embed a single string using HuggingFace Inference API.
+    """Embed a single string using OpenAI Embeddings API.
 
     Args:
         text: The text to embed.
@@ -22,14 +22,18 @@ def _embed_single(text: str) -> List[float]:
     Returns:
         Embedding vector as a list of floats.
     """
-    headers = {}
-    if HF_API_TOKEN:
-        headers["Authorization"] = f"Bearer {HF_API_TOKEN}"
-
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+    }
+    payload = {
+        "input": text,
+        "model": OPENAI_EMBEDDING_MODEL,
+    }
     with httpx.Client(timeout=60.0) as client:
-        resp = client.post(HF_INFERENCE_URL, json={"inputs": text}, headers=headers)
+        resp = client.post(OPENAI_EMBEDDING_URL, json=payload, headers=headers)
         resp.raise_for_status()
-        return resp.json()
+        return resp.json()["data"][0]["embedding"]
 
 
 def _cache_key(text: str) -> str:
@@ -76,22 +80,22 @@ def batch_embed(texts: List[str]) -> List[List[float]]:
             uncached_texts.append(text)
 
     if uncached_texts:
-        # Batch call — HF Inference API supports list inputs
-        headers = {}
-        if HF_API_TOKEN:
-            headers["Authorization"] = f"Bearer {HF_API_TOKEN}"
-
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+        }
+        payload = {
+            "input": uncached_texts,
+            "model": OPENAI_EMBEDDING_MODEL,
+        }
         with httpx.Client(timeout=60.0) as client:
-            resp = client.post(
-                HF_INFERENCE_URL,
-                json={"inputs": uncached_texts},
-                headers=headers,
-            )
+            resp = client.post(OPENAI_EMBEDDING_URL, json=payload, headers=headers)
             resp.raise_for_status()
-            vectors = resp.json()
+            data = resp.json()["data"]
 
-        for j, vector in enumerate(vectors):
+        for j, item in enumerate(data):
             idx = uncached_indices[j]
+            vector = item["embedding"]
             _cache[_cache_key(uncached_texts[j])] = vector
             results[idx] = vector
 
