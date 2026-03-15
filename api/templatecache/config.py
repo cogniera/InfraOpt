@@ -2,17 +2,13 @@
 
 import os
 
-# Local embeddings — set USE_LOCAL_EMBEDDINGS=true in .env to skip API calls
-USE_LOCAL_EMBEDDINGS: bool = os.getenv("USE_LOCAL_EMBEDDINGS", "false").lower() in ("true", "1", "yes")
-LOCAL_EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"
+# HuggingFace Inference Endpoint — primary LLM provider
+USE_HF_LLM: bool = os.getenv("USE_HF_LLM", "true").lower() in ("true", "1", "yes")
+HF_ENDPOINT_URL: str = os.getenv("HF_ENDPOINT_URL", "https://qyt7893blb71b5d3.us-east-2.aws.endpoints.huggingface.cloud/v1")
+HF_API_TOKEN: str = os.getenv("HF_API_TOKEN", "")
 
-# Local LLM — set USE_LOCAL_LLM=true in .env to use Ollama instead of Gemini
-USE_LOCAL_LLM: bool = os.getenv("USE_LOCAL_LLM", "false").lower() in ("true", "1", "yes")
-OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "gemma3:4b")
-OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-
-# Intent matching — local models produce lower scores, so use a lower threshold
-INTENT_SIMILARITY_THRESHOLD: float = 0.55 if USE_LOCAL_EMBEDDINGS else 0.90
+# Intent matching
+INTENT_SIMILARITY_THRESHOLD: float = 0.90
 
 # Slot confidence
 SLOT_CONFIDENCE_THRESHOLD: float = 0.50 if USE_LOCAL_EMBEDDINGS else 0.85

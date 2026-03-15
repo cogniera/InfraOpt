@@ -4,15 +4,11 @@ uvicorn>=0.24.0
 redis>=5.0.0
 python-dotenv>=1.0.0
 httpx>=0.25.0
-
-# Embeddings (local)
-sentence-transformers>=3.0.0
 numpy>=1.24.0
 
-# LLM (remote — only needed when USE_LOCAL_LLM=false)
+# Embeddings (Gemini)
 google-genai>=1.0.0
 
 # Testing
 pytest>=7.4.0
 pytest-asyncio>=0.21.0
-
