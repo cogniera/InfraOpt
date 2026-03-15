@@ -249,6 +249,40 @@ class TemplateCache:
                     self._cache_store.write_back(template=template)
                 )
 
+                # Templateable check — serve raw_response directly for
+                # non-templateable responses (e.g. code-heavy). Skips
+                # gap detection, slot filling, and answer extraction.
+                if not getattr(template, "templateable", True):
+                    if template.raw_response:
+                        estimated_full = len(template.raw_response.split()) * 2
+                        return {
+                            "response": template.raw_response,
+                            "cache_hit": True,
+                            "intent_id": intent_id,
+                            "slots_from_cache": 0,
+                            "slots_from_inference": 0,
+                            "slots_from_transfer": 0,
+                            "slots_from_blend": 0,
+                            "estimated_full_tokens": estimated_full,
+                            "actual_tokens_used": 0,
+                            "savings_ratio": 1.0,
+                            "stitch": {
+                                "skeleton": "",
+                                "slot_fills": {},
+                                "slot_sources": {},
+                                "has_slots": False,
+                                "gaps_detected": None,
+                                "slots_promoted": [],
+                                "blend_candidates": {},
+                                "answer_extracted": False,
+                                "compound_formatted": False,
+                                "multi_query": False,
+                                "sub_results": [],
+                                "templateable": False,
+                                "served_from": "raw_response",
+                            },
+                        }
+
                 # Detect query aspects not covered by the cached response
                 gaps = detect_query_gaps(prompt, template.skeleton)
 
