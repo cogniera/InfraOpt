@@ -258,12 +258,6 @@ function drawSearchRing(ctx, x, y, r, t) {
 function drawGenerating(ctx, x, y, r, elapsed) {
   const [gr,gg,gb]=COL.generate.glow;
   ctx.save();
-  ctx.font=`500 ${Math.max(9,r*0.21)}px Inter,sans-serif`;
-  ctx.fillStyle='rgba(0,0,0,0.82)';
-  ctx.textAlign='center'; ctx.textBaseline='middle';
-  ctx.fillText('Full LLM', x, y-r*0.28);
-  ctx.fillText('generation', x, y);
-  ctx.fillText('+ template', x, y+r*0.28);
   for(let i=0;i<3;i++){
     const by=y+r*0.58+Math.sin(elapsed*3.5+i*1.1)*4;
     const dg=ctx.createRadialGradient(x+(i-1)*13,by,0,x+(i-1)*13,by,5);
