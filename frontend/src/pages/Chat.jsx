@@ -129,6 +129,19 @@ function StitchPanel({ stitch, intentId }) {
             </div>
           )}
 
+          {/* Cluster */}
+          {stitch.cluster && (
+            <div style={sectionStyle}>
+              <div style={labelStyle}>🗂️ Cluster</div>
+              <code style={{
+                color: '#c084fc', fontSize: 11,
+                background: 'rgba(139,92,246,0.15)',
+                padding: '2px 8px', borderRadius: 4,
+                border: '1px solid rgba(139,92,246,0.25)',
+              }}>{stitch.cluster}</code>
+            </div>
+          )}
+
           {/* Intent ID */}
           {intentId && (
             <div style={sectionStyle}>
@@ -299,6 +312,17 @@ function Message({ msg }) {
               border: `1px solid ${msg.cacheHit ? 'rgba(16,185,129,0.25)' : 'rgba(239,68,68,0.2)'}`,
             }}>
               {msg.cacheHit ? '✓ cache hit' : '✗ cache miss'}
+            </span>
+          )}
+          {!isUser && msg.stitch?.cluster && (
+            <span style={{
+              fontSize: 10, fontFamily: 'JetBrains Mono, monospace', fontWeight: 600,
+              padding: '1px 6px', borderRadius: 4,
+              background: 'rgba(139,92,246,0.12)',
+              color: '#c084fc',
+              border: '1px solid rgba(139,92,246,0.25)',
+            }}>
+              🗂️ {msg.stitch.cluster}
             </span>
           )}
           {!isUser && msg.savingsRatio != null && (
@@ -606,14 +630,14 @@ export default function Chat() {
       };
     }));
 
-    // Start animation immediately
+    // Start animation immediately — paths are identical until router (~7.6s)
     animDone.current = false;
     setPipelineCacheHit(false);
     setShowPipeline(true);
     setLoading(true);
     pendingChatId.current = chatId;
 
-    // Fire API call — buffer result; whichever finishes last (API or animation) applies it
+    // Fire API call in parallel with animation
     try {
       const res = await fetch('/query', {
         method: 'POST',
