@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 from typing import Dict, List
 
 import templatecache.config as config
@@ -223,23 +224,60 @@ class TemplateCache:
             prompt: A single-topic user query.
 
         Returns:
-            Dict with the full response contract.
+            Dict with the full response contract including pipeline_trace.
 
         Side effects:
             May make LLM and embedding API calls. May write to Redis.
         """
+        t0 = time.perf_counter()
+        trace: List[Dict] = []
+
+        def _trace(stage: str, **data: object) -> None:
+            """Append a timestamped entry to the pipeline trace."""
+            trace.append({
+                "stage": stage,
+                "ms": round((time.perf_counter() - t0) * 1000, 1),
+                **data,
+            })
+
+        _trace("input", prompt=prompt)
+
         # Route query — use cluster router if built, else flat scan
         cluster_label = None
         if self._cluster_router.is_built:
             intent_id, variant, cluster_label = self._cluster_router.route(prompt)
+            _trace(
+                "routing",
+                router="cluster",
+                intent_id=intent_id,
+                variant=variant,
+                cluster=cluster_label,
+                hit=intent_id is not None,
+            )
         else:
             intent_id, variant = self._router.route(prompt)
+            _trace(
+                "routing",
+                router="flat",
+                intent_id=intent_id,
+                variant=variant,
+                hit=intent_id is not None,
+            )
 
         if intent_id is not None:
             # Cache hit path
             template = self._cache_store.get_template(intent_id)
             if template is not None:
                 template.hit_count += 1
+                _trace(
+                    "template_lookup",
+                    found=True,
+                    hit_count=template.hit_count,
+                    slot_count=len(template.slots),
+                    variant=template.variant,
+                    templateable=getattr(template, "templateable", True),
+                    skeleton_preview=template.skeleton[:120] + ("…" if len(template.skeleton) > 120 else ""),
+                )
 
                 # Centroid averaging — update centroid embedding as rolling
                 # average so it covers more phrasings over time
@@ -255,6 +293,12 @@ class TemplateCache:
                 if not getattr(template, "templateable", True):
                     if template.raw_response:
                         estimated_full = len(template.raw_response.split()) * 2
+                        _trace(
+                            "templateable_bypass",
+                            reason="code-heavy or non-templateable",
+                            response_preview=template.raw_response[:80],
+                        )
+                        _trace("done", total_ms=round((time.perf_counter() - t0) * 1000, 1))
                         return {
                             "response": template.raw_response,
                             "cache_hit": True,
@@ -266,6 +310,7 @@ class TemplateCache:
                             "estimated_full_tokens": estimated_full,
                             "actual_tokens_used": 0,
                             "savings_ratio": 1.0,
+                            "pipeline_trace": trace,
                             "stitch": {
                                 "skeleton": "",
                                 "slot_fills": {},
@@ -285,12 +330,27 @@ class TemplateCache:
 
                 # Detect query aspects not covered by the cached response
                 gaps = detect_query_gaps(prompt, template.skeleton)
+                _trace(
+                    "gap_detection",
+                    gaps_found=len(gaps),
+                    gaps=gaps,
+                )
 
                 try:
                     response, from_cache, from_inference, stitch_info = (
                         await self._slot_engine.fill(
                             template, prompt, gaps=gaps
                         )
+                    )
+                    _trace(
+                        "slot_filling",
+                        total_slots=len(template.slots),
+                        from_cache=from_cache,
+                        from_inference=from_inference,
+                        from_transfer=stitch_info.get("slots_from_transfer", 0),
+                        from_blend=stitch_info.get("slots_from_blend", 0),
+                        slot_fills={k: v[:60] for k, v in stitch_info.get("slot_fills", {}).items()},
+                        slot_sources=stitch_info.get("slot_sources", {}),
                     )
                 except Exception as slot_err:
                     logger.warning(
@@ -307,11 +367,13 @@ class TemplateCache:
                         "gaps_detected": gaps,
                         "supplement_error": str(slot_err),
                     }
+                    _trace("slot_filling", error=str(slot_err))
 
                 if response is not None:
                     # Answer extraction: if query asks for a specific
                     # item and the template is a list variant, extract
                     # just the relevant item.
+                    answer_extracted = False
                     if config.ANSWER_EXTRACTION_ENABLED and template.variant == "list":
                         compound_formatted = _format_compound_list_response(prompt, response)
                         if compound_formatted is not None:
@@ -319,12 +381,16 @@ class TemplateCache:
                             stitch_info["compound_formatted"] = True
                             stitch_info["full_list_response"] = response
                             response = compound_formatted
+                            answer_extracted = True
                         else:
                             extracted = extract_specific_answer(prompt, response)
                             if extracted is not None:
                                 stitch_info["answer_extracted"] = True
                                 stitch_info["full_list_response"] = response
                                 response = extracted
+                                answer_extracted = True
+                    if answer_extracted:
+                        _trace("answer_extraction", extracted=True, response_preview=response[:80])
 
                     estimated_full = len(response.split()) * 2
                     actual_used = from_inference * 40
@@ -344,6 +410,17 @@ class TemplateCache:
                         if promoted:
                             slots_promoted = promoted
                     stitch_info["slots_promoted"] = slots_promoted
+                    if gaps:
+                        _trace("gap_learning", gaps_recorded=len(gaps), slots_promoted=slots_promoted)
+
+                    _trace(
+                        "done",
+                        cache_hit=True,
+                        savings_ratio=round(savings, 3),
+                        estimated_full_tokens=estimated_full,
+                        actual_tokens_used=actual_used,
+                        total_ms=round((time.perf_counter() - t0) * 1000, 1),
+                    )
 
                     return {
                         "response": response,
@@ -356,18 +433,33 @@ class TemplateCache:
                         "estimated_full_tokens": estimated_full,
                         "actual_tokens_used": actual_used,
                         "savings_ratio": savings,
+                        "pipeline_trace": trace,
                         "stitch": stitch_info,
                     }
 
         # Cache miss — full LLM generation
+        _trace("cache_miss", reason="no matching intent or no template")
         miss_prompt = f"Answer concisely and directly.\n\n{prompt}"
         response_text = await llm_call(miss_prompt, max_tokens=512)
+        _trace(
+            "llm_generation",
+            response_length=len(response_text),
+            response_preview=response_text[:100],
+        )
 
         # Extract template for future use
         skeleton, slots, dep_graph, _slot_types, templateable = extract_template(
             response_text
         )
         variant = determine_variant(prompt)
+        _trace(
+            "template_extraction",
+            slots_extracted=len(slots),
+            slots=slots,
+            variant=variant,
+            templateable=templateable,
+            skeleton_preview=skeleton[:120] + ("…" if len(skeleton) > 120 else ""),
+        )
 
         if intent_id is None:
             import hashlib
@@ -401,6 +493,7 @@ class TemplateCache:
                 template=new_template, centroid=new_centroid
             )
         )
+        _trace("write_back", intent_id=intent_id, slots=slots)
 
         # Add new centroid to cluster router's in-memory map so
         # subsequent queries can match it without a server restart.
@@ -409,6 +502,14 @@ class TemplateCache:
             self._cluster_router.update_centroid(new_centroid)
 
         estimated_full = len(response_text.split()) * 2
+        _trace(
+            "done",
+            cache_hit=False,
+            savings_ratio=0.0,
+            estimated_full_tokens=estimated_full,
+            actual_tokens_used=estimated_full,
+            total_ms=round((time.perf_counter() - t0) * 1000, 1),
+        )
         return {
             "response": response_text,
             "cache_hit": False,
@@ -418,6 +519,7 @@ class TemplateCache:
             "estimated_full_tokens": estimated_full,
             "actual_tokens_used": estimated_full,
             "savings_ratio": 0.0,
+            "pipeline_trace": trace,
         }
 
     async def query(self, prompt: str) -> Dict:
@@ -448,6 +550,10 @@ class TemplateCache:
                 return await self._query_single(prompt)
 
             # Multi-query — route each sub-question independently
+            multi_trace: List[Dict] = [
+                {"stage": "input", "prompt": prompt, "ms": 0},
+                {"stage": "multi_query_split", "sub_queries": sub_queries, "count": len(sub_queries), "ms": 0},
+            ]
             logger.info(
                 "Multi-query detected: %d sub-questions from '%s'",
                 len(sub_queries), prompt,
@@ -489,9 +595,19 @@ class TemplateCache:
                     "cache_hit": result["cache_hit"],
                     "intent_id": result.get("intent_id"),
                 })
+                # Collect per-sub-query trace
+                multi_trace.append({
+                    "stage": f"sub_query_{len(sub_stitch)}",
+                    "sub_query": sq,
+                    "cache_hit": result["cache_hit"],
+                    "intent_id": result.get("intent_id"),
+                    "sub_trace": result.get("pipeline_trace", []),
+                    "ms": 0,
+                })
 
             combined_response = "\n\n".join(combined_parts)
             savings = max(0.0, 1.0 - (total_actual / max(total_estimated, 1)))
+            multi_trace.append({"stage": "done", "cache_hit": any_hit, "savings_ratio": round(savings, 3), "ms": 0})
 
             return {
                 "response": combined_response,
@@ -502,6 +618,7 @@ class TemplateCache:
                 "estimated_full_tokens": total_estimated,
                 "actual_tokens_used": total_actual,
                 "savings_ratio": savings,
+                "pipeline_trace": multi_trace,
                 "stitch": {
                     "skeleton": combined_response,
                     "slot_fills": {},

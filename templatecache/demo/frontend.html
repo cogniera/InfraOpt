@@ -41,6 +41,32 @@
   .stitch-result { background: #0a1a0a; border: 1px solid #14532d; border-radius: 6px; padding: 10px 12px; font-size: 12px; line-height: 1.5; white-space: pre-wrap; }
   .stitch-result .filled-slot { background: #14532d; color: #4ade80; padding: 1px 5px; border-radius: 3px; }
   .no-slots-badge { display: inline-block; background: #1e293b; color: #94a3b8; padding: 3px 10px; border-radius: 4px; font-size: 11px; }
+  .trace-toggle { cursor: pointer; color: #a78bfa; font-size: 12px; margin-left: 8px; text-decoration: underline; }
+  .trace-toggle:hover { color: #c4b5fd; }
+  .trace-panel { margin-top: 10px; border-top: 1px solid #2a2a2a; padding-top: 10px; display: none; font-size: 13px; }
+  .trace-panel.open { display: block; }
+  .trace-timeline { position: relative; padding-left: 20px; }
+  .trace-step { position: relative; padding: 6px 0 6px 16px; border-left: 2px solid #333; }
+  .trace-step:last-child { border-left-color: transparent; }
+  .trace-step::before { content: ''; position: absolute; left: -6px; top: 10px; width: 10px; height: 10px; border-radius: 50%; background: #333; border: 2px solid #555; }
+  .trace-step.stage-input::before { background: #3b82f6; border-color: #60a5fa; }
+  .trace-step.stage-routing::before { background: #8b5cf6; border-color: #a78bfa; }
+  .trace-step.stage-template_lookup::before { background: #10b981; border-color: #34d399; }
+  .trace-step.stage-gap_detection::before { background: #f59e0b; border-color: #fbbf24; }
+  .trace-step.stage-slot_filling::before { background: #ef4444; border-color: #f87171; }
+  .trace-step.stage-answer_extraction::before { background: #ec4899; border-color: #f472b6; }
+  .trace-step.stage-gap_learning::before { background: #14b8a6; border-color: #2dd4bf; }
+  .trace-step.stage-done::before { background: #4ade80; border-color: #86efac; }
+  .trace-step.stage-cache_miss::before { background: #f87171; border-color: #fca5a5; }
+  .trace-step.stage-llm_generation::before { background: #fbbf24; border-color: #fde68a; }
+  .trace-step.stage-template_extraction::before { background: #818cf8; border-color: #a5b4fc; }
+  .trace-step.stage-write_back::before { background: #06b6d4; border-color: #22d3ee; }
+  .trace-step.stage-templateable_bypass::before { background: #f97316; border-color: #fb923c; }
+  .trace-step.stage-multi_query_split::before { background: #e879f9; border-color: #f0abfc; }
+  .trace-stage { font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.3px; }
+  .trace-ms { color: #666; font-size: 11px; margin-left: 8px; }
+  .trace-data { font-size: 11px; color: #9ca3af; margin-top: 2px; line-height: 1.4; }
+  .trace-data code { background: #1e293b; padding: 1px 4px; border-radius: 3px; color: #cbd5e1; font-size: 10px; }
   #input-area { padding: 16px 24px; border-top: 1px solid #2a2a2a; display: flex; gap: 12px; max-width: 768px; width: 100%; margin: 0 auto; }
   #prompt { flex: 1; padding: 12px 16px; border-radius: 10px; border: 1px solid #333; background: #1a1a1a; color: #e0e0e0; font-size: 15px; outline: none; resize: none; font-family: inherit; }
   #prompt:focus { border-color: #555; }
@@ -119,6 +145,24 @@ async function send() {
     const m = document.createElement('div');
     m.className = 'meta';
     m.innerHTML = meta;
+    // Add pipeline trace toggle
+    if (d.pipeline_trace && d.pipeline_trace.length > 0) {
+      const traceId = 'trace-' + Date.now();
+      const traceToggle = document.createElement('span');
+      traceToggle.className = 'trace-toggle';
+      traceToggle.textContent = '▶ Pipeline trace';
+      traceToggle.onclick = () => {
+        const panel = document.getElementById(traceId);
+        panel.classList.toggle('open');
+        traceToggle.textContent = panel.classList.contains('open') ? '▼ Pipeline trace' : '▶ Pipeline trace';
+      };
+      m.appendChild(traceToggle);
+      const tracePanel = document.createElement('div');
+      tracePanel.className = 'trace-panel';
+      tracePanel.id = traceId;
+      tracePanel.innerHTML = buildTraceViz(d.pipeline_trace);
+      m.appendChild(tracePanel);
+    }
     // Add stitch toggle if cache hit
     if (d.cache_hit && d.stitch) {
       const toggleId = 'stitch-' + Date.now();
@@ -144,6 +188,81 @@ async function send() {
   btn.disabled = false;
   refreshStats();
   input.focus();
+}
+
+function buildTraceViz(trace) {
+  const stageLabels = {
+    input: '📥 Input',
+    routing: '🎯 Routing',
+    template_lookup: '📋 Template Lookup',
+    gap_detection: '🔍 Gap Detection',
+    slot_filling: '🔧 Slot Filling',
+    answer_extraction: '✂️ Answer Extraction',
+    gap_learning: '🧠 Gap Learning',
+    templateable_bypass: '⚡ Raw Response Bypass',
+    cache_miss: '❌ Cache Miss',
+    llm_generation: '🤖 LLM Generation',
+    template_extraction: '🧩 Template Extraction',
+    write_back: '💾 Write-back',
+    multi_query_split: '🔀 Multi-Query Split',
+    done: '✅ Done',
+  };
+  const stageColors = {
+    input: '#3b82f6', routing: '#8b5cf6', template_lookup: '#10b981',
+    gap_detection: '#f59e0b', slot_filling: '#ef4444', answer_extraction: '#ec4899',
+    gap_learning: '#14b8a6', done: '#4ade80', cache_miss: '#f87171',
+    llm_generation: '#fbbf24', template_extraction: '#818cf8', write_back: '#06b6d4',
+    templateable_bypass: '#f97316', multi_query_split: '#e879f9',
+  };
+
+  let html = '<div class="trace-timeline">';
+  for (const step of trace) {
+    const label = stageLabels[step.stage] || step.stage;
+    const color = stageColors[step.stage] || '#888';
+    const stageClass = 'stage-' + step.stage.replace(/[^a-z_]/g, '');
+    html += `<div class="trace-step ${stageClass}">`;
+    html += `<span class="trace-stage" style="color:${color}">${label}</span>`;
+    html += `<span class="trace-ms">${step.ms}ms</span>`;
+
+    // Render step-specific data
+    const data = Object.entries(step).filter(([k]) => !['stage','ms'].includes(k));
+    if (data.length > 0) {
+      html += '<div class="trace-data">';
+      for (const [k, v] of data) {
+        if (k === 'sub_trace' && Array.isArray(v) && v.length > 0) {
+          html += `<div style="margin-left:12px;border-left:2px solid #333;padding-left:8px;margin-top:4px">`;
+          for (const sub of v) {
+            const subLabel = stageLabels[sub.stage] || sub.stage;
+            const subColor = stageColors[sub.stage] || '#888';
+            html += `<div><span style="color:${subColor};font-weight:600;font-size:10px">${subLabel}</span> <span style="color:#666;font-size:10px">${sub.ms}ms</span>`;
+            const subData = Object.entries(sub).filter(([sk]) => !['stage','ms','sub_trace'].includes(sk));
+            if (subData.length > 0) {
+              html += ` — `;
+              for (const [sk, sv] of subData) html += `<code>${sk}: ${formatTraceVal(sv)}</code> `;
+            }
+            html += `</div>`;
+          }
+          html += `</div>`;
+        } else if (typeof v === 'object' && v !== null) {
+          html += `<div>${k}: <code>${escHtml(JSON.stringify(v))}</code></div>`;
+        } else {
+          html += `<div>${k}: <code>${formatTraceVal(v)}</code></div>`;
+        }
+      }
+      html += '</div>';
+    }
+    html += '</div>';
+  }
+  html += '</div>';
+  return html;
+}
+
+function formatTraceVal(v) {
+  if (typeof v === 'string') return escHtml(v.length > 100 ? v.slice(0, 100) + '…' : v);
+  if (typeof v === 'number') return String(v);
+  if (typeof v === 'boolean') return v ? '✓' : '✗';
+  if (v === null || v === undefined) return '—';
+  return escHtml(JSON.stringify(v));
 }
 
 function buildStitchViz(stitch, intentId) {
