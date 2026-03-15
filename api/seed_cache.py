@@ -278,7 +278,7 @@ async def main():
     print(f"[seed] {len(centroids)} centroids written to Redis", flush=True)
 
     print("[seed] Building cluster index...", flush=True)
-    cluster_router = ClusterRouter(cache_store=cache_store)
+    cluster_router = ClusterRouter()
     cluster_router.build(centroids)
 
     if cluster_router.is_built:

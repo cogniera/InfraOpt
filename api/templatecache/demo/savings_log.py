@@ -92,3 +92,25 @@ class SavingsLog:
             "templates_evolved": len(self._evolved_templates),
         }
 
+    def history(self) -> List[Dict]:
+        """Return per-request token savings for graphing.
+
+        Returns:
+            List of dicts with request_number, prompt (truncated),
+            tokens_saved, cache_hit, and savings_ratio.
+        """
+        out = []
+        cumulative = 0
+        for i, e in enumerate(self._entries, 1):
+            saved = e.get("estimated_full_tokens", 0) - e.get("actual_tokens_used", 0)
+            cumulative += saved
+            out.append({
+                "request_number": i,
+                "prompt": (e.get("prompt", "") or "")[:50],
+                "tokens_saved": saved,
+                "cumulative_tokens_saved": cumulative,
+                "cache_hit": e.get("cache_hit", False),
+                "savings_ratio": e.get("savings_ratio", 0.0),
+            })
+        return out
+

@@ -57,6 +57,12 @@ async def stats_endpoint() -> dict:
     return _log.stats()
 
 
+@app.get("/stats/history")
+async def stats_history_endpoint() -> list:
+    """Return per-request token savings history for graphing."""
+    return _log.history()
+
+
 @app.get("/", response_class=HTMLResponse)
 async def frontend() -> str:
     """Serve the frontend HTML page.
