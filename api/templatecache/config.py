@@ -6,8 +6,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# HuggingFace Inference Endpoint — primary LLM provider
-USE_HF_LLM: bool = os.getenv("USE_HF_LLM", "true").lower() in ("true", "1", "yes")
+# HuggingFace Inference Endpoint — LLM provider
 HF_ENDPOINT_URL: str = os.getenv("HF_ENDPOINT_URL", "https://qyt7893blb71b5d3.us-east-2.aws.endpoints.huggingface.cloud/v1")
 HF_API_TOKEN: str = os.getenv("HF_API_TOKEN", "")
 
@@ -55,9 +54,8 @@ GAP_PROMOTION_THRESHOLD: int = 3  # gap type occurrences before promoting to slo
 ANSWER_EXTRACTION_ENABLED: bool = True
 ANSWER_EXTRACTION_MIN_SCORE: float = 3.0
 
-# Model names
-EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "gemini-embedding-001")
-LLM_MODEL: str = os.getenv("LLM_MODEL", "gemini-2.0-flash")
+# HuggingFace embedding model (used via HF Inference API)
+HF_EMBEDDING_MODEL: str = os.getenv("HF_EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 
 # Variant token thresholds
 VARIANT_SHORT_MAX_TOKENS: int = 80

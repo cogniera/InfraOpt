@@ -1,27 +1,20 @@
 """Embedding utilities. All similarity comparisons must use cosine_similarity() from here."""
 
 import hashlib
-from typing import Any, Dict, List, Optional
+from typing import Dict, List
 
+import httpx
 import numpy as np
 
-from templatecache.config import EMBEDDING_MODEL
+from templatecache.config import HF_API_TOKEN, HF_EMBEDDING_MODEL
 
-_gemini_client: Optional[Any] = None
 _cache: Dict[str, List[float]] = {}
 
-
-def _get_gemini_client() -> Any:
-    """Return the shared Gemini client, creating it on first use."""
-    global _gemini_client
-    if _gemini_client is None:
-        from google import genai
-        _gemini_client = genai.Client()
-    return _gemini_client
+HF_INFERENCE_URL = f"https://api-inference.huggingface.co/models/{HF_EMBEDDING_MODEL}"
 
 
 def _embed_single(text: str) -> List[float]:
-    """Embed a single string using Gemini embeddings.
+    """Embed a single string using HuggingFace Inference API.
 
     Args:
         text: The text to embed.
@@ -29,11 +22,14 @@ def _embed_single(text: str) -> List[float]:
     Returns:
         Embedding vector as a list of floats.
     """
-    response = _get_gemini_client().models.embed_content(
-        model=EMBEDDING_MODEL, contents=text
-    )
-    vector = response.embeddings[0].values
-    return vector
+    headers = {}
+    if HF_API_TOKEN:
+        headers["Authorization"] = f"Bearer {HF_API_TOKEN}"
+
+    with httpx.Client(timeout=60.0) as client:
+        resp = client.post(HF_INFERENCE_URL, json={"inputs": text}, headers=headers)
+        resp.raise_for_status()
+        return resp.json()
 
 
 def _cache_key(text: str) -> str:
@@ -80,10 +76,23 @@ def batch_embed(texts: List[str]) -> List[List[float]]:
             uncached_texts.append(text)
 
     if uncached_texts:
-        for j, text in enumerate(uncached_texts):
-            vector = _embed_single(text)
+        # Batch call — HF Inference API supports list inputs
+        headers = {}
+        if HF_API_TOKEN:
+            headers["Authorization"] = f"Bearer {HF_API_TOKEN}"
+
+        with httpx.Client(timeout=60.0) as client:
+            resp = client.post(
+                HF_INFERENCE_URL,
+                json={"inputs": uncached_texts},
+                headers=headers,
+            )
+            resp.raise_for_status()
+            vectors = resp.json()
+
+        for j, vector in enumerate(vectors):
             idx = uncached_indices[j]
-            _cache[_cache_key(text)] = vector
+            _cache[_cache_key(uncached_texts[j])] = vector
             results[idx] = vector
 
     return results
