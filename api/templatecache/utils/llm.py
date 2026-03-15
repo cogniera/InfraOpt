@@ -1,16 +1,28 @@
 """Central LLM call interface. All LLM calls must go through llm_call() only."""
 
 import logging
+import os
 
-import httpx
-
-from templatecache.config import OPENAI_API_KEY, OPENAI_LLM_MODEL
+from openai import OpenAI
 
 logger = logging.getLogger(__name__)
 
+_client = None
+
+
+def _get_client() -> OpenAI:
+    """Return the shared OpenAI-compatible client, creating it on first use."""
+    global _client
+    if _client is None:
+        _client = OpenAI(
+            api_key=os.getenv("OPENAI_API_KEY", "123"),
+            base_url="https://qyt7893blb71b5d3.us-east-2.aws.endpoints.huggingface.cloud/v1",
+        )
+    return _client
+
 
 async def llm_call(prompt: str, max_tokens: int) -> str:
-    """Make an LLM call via OpenAI API.
+    """Make an LLM call. All modules must use this function exclusively.
 
     Args:
         prompt: The prompt to send to the LLM.
@@ -18,22 +30,18 @@ async def llm_call(prompt: str, max_tokens: int) -> str:
 
     Returns:
         The LLM response text.
+
+    Side effects:
+        Makes an API call to the Hugging Face inference endpoint.
     """
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
-    }
-    payload = {
-        "model": OPENAI_LLM_MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": max_tokens,
-    }
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        resp = await client.post(
-            "https://api.openai.com/v1/chat/completions",
-            json=payload,
-            headers=headers,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        return data["choices"][0]["message"]["content"]
+    client = _get_client()
+    resp = client.chat.completions.create(
+        model="openai/gpt-oss-120b",
+        messages=[
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": prompt},
+        ],
+        max_tokens=max_tokens,
+    )
+    return resp.choices[0].message.content or ""
+
