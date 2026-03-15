@@ -55,7 +55,7 @@ ANSWER_EXTRACTION_ENABLED: bool = True
 ANSWER_EXTRACTION_MIN_SCORE: float = 3.0
 
 # HuggingFace embedding model (used via HF Inference API)
-HF_EMBEDDING_MODEL: str = os.getenv("HF_EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+HF_EMBEDDING_MODEL: str = os.getenv("HF_EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
 
 # Variant token thresholds
 VARIANT_SHORT_MAX_TOKENS: int = 80
