@@ -6,8 +6,8 @@ import os
 USE_LOCAL_EMBEDDINGS: bool = os.getenv("USE_LOCAL_EMBEDDINGS", "false").lower() in ("true", "1", "yes")
 LOCAL_EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"
 
-# Local LLM — set USE_LOCAL_LLM=true in .env to use Ollama instead of Gemini
-USE_LOCAL_LLM: bool = os.getenv("USE_LOCAL_LLM", "false").lower() in ("true", "1", "yes")
+# Local LLM — always use Ollama
+USE_LOCAL_LLM: bool = True
 OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "gemma3:4b")
 OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
