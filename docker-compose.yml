@@ -1,0 +1,67 @@
+name: inferopt
+
+services:
+
+  # ── Redis — intent + slot cache storage ───────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: inferopt-redis
+    restart: unless-stopped
+    networks:
+      - inferopt-net
+
+  # ── TemplateCache API (FastAPI) ────────────────────────────────────────────────
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: inferopt-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./api/.env
+    environment:
+      # Docker overrides — Redis must point to the container, not localhost
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      - redis
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - inferopt-net
+
+  # ── Node.js backend — handles /api/* stub routes ──────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: inferopt-backend
+    restart: unless-stopped
+    environment:
+      - PORT=3000
+      - FASTAPI_URL=http://api:8000
+    depends_on:
+      - api
+    networks:
+      - inferopt-net
+
+  # ── Nginx — serves React frontend, proxies /query and /stats to api ───────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: inferopt-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - api
+      - backend
+    networks:
+      - inferopt-net
+
+networks:
+  inferopt-net:
+    driver: bridge
