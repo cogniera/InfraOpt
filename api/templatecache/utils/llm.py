@@ -17,7 +17,7 @@ async def llm_call(prompt: str, max_tokens: int) -> str:
         max_tokens: Maximum number of tokens in the response.
 
     Returns:
-        The generated text from Ollama.
+        The LLM response text.
 
     Side effects:
         Makes an HTTP call to the local Ollama server.
@@ -36,4 +36,3 @@ async def llm_call(prompt: str, max_tokens: int) -> str:
         resp.raise_for_status()
         data = resp.json()
         return data.get("response", "")
-

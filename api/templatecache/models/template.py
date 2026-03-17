@@ -17,6 +17,11 @@ class ResponseTemplate:
         variant: One of 'short', 'detailed', or 'list'.
         hit_count: Number of times this template has been served.
         created_at: Timestamp when the template was first created.
+        templateable: Whether this response is suitable for templating.
+            False when the response is >60% code blocks or has too many
+            variable parts to template reliably.
+        raw_response: Original full response text, stored when
+            templateable is False so the response can still be served.
     """
 
     intent_id: str
@@ -26,4 +31,6 @@ class ResponseTemplate:
     variant: str = "detailed"
     hit_count: int = 0
     created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+    templateable: bool = True
+    raw_response: str = ""
 

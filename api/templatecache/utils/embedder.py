@@ -5,20 +5,10 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from templatecache.config import EMBEDDING_MODEL, LOCAL_EMBEDDING_MODEL, USE_LOCAL_EMBEDDINGS
+from templatecache.config import LOCAL_EMBEDDING_MODEL
 
-_gemini_client: Optional[Any] = None
 _local_model: Optional[Any] = None
 _cache: Dict[str, List[float]] = {}
-
-
-def _get_gemini_client() -> Any:
-    """Return the shared Gemini client, creating it on first use."""
-    global _gemini_client
-    if _gemini_client is None:
-        from google import genai
-        _gemini_client = genai.Client()
-    return _gemini_client
 
 
 def _get_local_model() -> Any:
@@ -28,26 +18,6 @@ def _get_local_model() -> Any:
         from sentence_transformers import SentenceTransformer
         _local_model = SentenceTransformer(LOCAL_EMBEDDING_MODEL)
     return _local_model
-
-
-def _embed_single(text: str) -> List[float]:
-    """Embed a single string using the configured backend.
-
-    Args:
-        text: The text to embed.
-
-    Returns:
-        Embedding vector as a list of floats.
-    """
-    if USE_LOCAL_EMBEDDINGS:
-        model = _get_local_model()
-        vector = model.encode(text).tolist()
-    else:
-        response = _get_gemini_client().models.embed_content(
-            model=EMBEDDING_MODEL, contents=text
-        )
-        vector = response.embeddings[0].values
-    return vector
 
 
 def _cache_key(text: str) -> str:
@@ -67,7 +37,7 @@ def embed(text: str) -> List[float]:
     key = _cache_key(text)
     if key in _cache:
         return _cache[key]
-    vector = _embed_single(text)
+    vector = _get_local_model().encode(text).tolist()
     _cache[key] = vector
     return vector
 
@@ -94,19 +64,12 @@ def batch_embed(texts: List[str]) -> List[List[float]]:
             uncached_texts.append(text)
 
     if uncached_texts:
-        if USE_LOCAL_EMBEDDINGS:
-            model = _get_local_model()
-            vectors = model.encode(uncached_texts).tolist()
-            for j, vector in enumerate(vectors):
-                idx = uncached_indices[j]
-                _cache[_cache_key(uncached_texts[j])] = vector
-                results[idx] = vector
-        else:
-            for j, text in enumerate(uncached_texts):
-                vector = _embed_single(text)
-                idx = uncached_indices[j]
-                _cache[_cache_key(text)] = vector
-                results[idx] = vector
+        model = _get_local_model()
+        vectors = model.encode(uncached_texts).tolist()
+        for j, vector in enumerate(vectors):
+            idx = uncached_indices[j]
+            _cache[_cache_key(uncached_texts[j])] = vector
+            results[idx] = vector
 
     return results
 
@@ -128,4 +91,3 @@ def cosine_similarity(vec_a: List[float], vec_b: List[float]) -> float:
     if norm_a == 0 or norm_b == 0:
         return 0.0
     return float(np.dot(a, b) / (norm_a * norm_b))
-

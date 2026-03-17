@@ -4,7 +4,6 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
@@ -14,14 +13,8 @@ from templatecache.demo.savings_log import SavingsLog
 from templatecache.main import TemplateCache
 
 app = FastAPI(title="TemplateCache Demo")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-_cache = TemplateCache()
 _log = SavingsLog()
+_cache = TemplateCache(savings_log=_log)
 _FRONTEND_PATH = Path(__file__).parent / "frontend.html"
 
 
@@ -55,12 +48,6 @@ async def stats_endpoint() -> dict:
         total_tokens_saved, slots_served_from_cache, slots_served_from_inference.
     """
     return _log.stats()
-
-
-@app.get("/stats/history")
-async def stats_history_endpoint() -> list:
-    """Return per-request token savings history for graphing."""
-    return _log.history()
 
 
 @app.get("/", response_class=HTMLResponse)

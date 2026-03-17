@@ -166,3 +166,80 @@ class TestIntentCentroidRoundTrip:
         result = cache_store.get_intent_centroid("nonexistent")
         assert result is None
 
+
+
+
+class TestGetSlotsByType:
+    """get_slots_by_type returns correct records filtered by type."""
+
+    @pytest.mark.asyncio
+    async def test_returns_matching_type(self, cache_store):
+        """Returns only records matching the requested slot_type."""
+        rec_currency = SlotRecord(
+            slot_id="currency_0",
+            context_hash="c1",
+            fill_value="$50",
+            fill_embedding=[0.1],
+            similarity_score=0.9,
+            slot_type="currency",
+        )
+        rec_number = SlotRecord(
+            slot_id="number_0",
+            context_hash="c2",
+            fill_value="42",
+            fill_embedding=[0.2],
+            similarity_score=0.8,
+            slot_type="numeric",
+        )
+        await cache_store.write_back(slot_record=rec_currency)
+        await cache_store.write_back(slot_record=rec_number)
+
+        results = cache_store.get_slots_by_type("currency")
+        assert len(results) == 1
+        assert results[0].fill_value == "$50"
+        assert results[0].slot_type == "currency"
+
+    @pytest.mark.asyncio
+    async def test_filters_low_decay_weight(self, cache_store):
+        """Records with decay_weight below 0.3 are excluded."""
+        old_date = (datetime.now(UTC) - timedelta(days=365 * 3)).isoformat()
+        rec = SlotRecord(
+            slot_id="currency_0",
+            context_hash="old",
+            fill_value="$10",
+            fill_embedding=[0.1],
+            similarity_score=0.9,
+            slot_type="currency",
+            created_at=old_date,
+        )
+        await cache_store.write_back(slot_record=rec)
+
+        results = cache_store.get_slots_by_type("currency")
+        # Record is very old (3 years = ~36 decay periods), decay_weight should be < 0.3
+        assert len(results) == 0
+
+
+class TestGapStorage:
+    """store_gap and get_gap_counts work correctly."""
+
+    def test_store_gap_increments_counter(self, cache_store):
+        """store_gap increments the count for a gap type."""
+        cache_store.store_gap("t1", "temporal", "when was this updated?")
+        cache_store.store_gap("t1", "temporal", "how recent is this?")
+        cache_store.store_gap("t1", "comparison", "how does this compare?")
+
+        counts = cache_store.get_gap_counts("t1")
+        assert counts["temporal"] == 2
+        assert counts["comparison"] == 1
+
+    def test_get_gap_counts_returns_accurate_dict(self, cache_store):
+        """get_gap_counts returns all gap types with correct counts."""
+        cache_store.store_gap("t2", "elaboration", "explain more")
+        counts = cache_store.get_gap_counts("t2")
+        assert isinstance(counts, dict)
+        assert counts["elaboration"] == 1
+
+    def test_get_gap_counts_empty_template(self, cache_store):
+        """get_gap_counts returns empty dict for template with no gaps."""
+        counts = cache_store.get_gap_counts("nonexistent")
+        assert counts == {}

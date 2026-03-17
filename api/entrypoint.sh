@@ -36,4 +36,4 @@ echo "  → Cache seeded successfully"
 
 # 4. Start the API server
 echo "[4/4] Starting uvicorn..."
-exec python -m uvicorn templatecache.demo.app:app --host 0.0.0.0 --port 8000
+exec python -m uvicorn main:app --host 0.0.0.0 --port 8000

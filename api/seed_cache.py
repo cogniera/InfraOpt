@@ -239,12 +239,7 @@ EXAMPLES = [
 
 
 async def main():
-    import time
-
-    t0 = time.time()
-
     # Merge base examples with large template set
-    print("[seed] Loading example sets...", flush=True)
     from templates_large import TEMPLATES as LARGE_TEMPLATES
 
     all_examples = list(EXAMPLES)
@@ -259,37 +254,29 @@ async def main():
             existing_ids.add(t["intent_id"])
 
     intents = set(ex["intent_id"] for ex in all_examples)
-    print(f"[seed] {len(all_examples)} query-response pairs ({len(intents)} unique intents)", flush=True)
+    print(f"Seeding {len(all_examples)} query-response pairs ({len(intents)} unique intents)...")
 
     cache_store = CacheStore()
     router = IntentRouter(cache_store)
 
-    print("[seed] Loading embedding model (first run downloads ~90MB)...", flush=True)
-    # Trigger model load before the seeding loop so the download log is clear
-    from templatecache.utils.embedder import embed
-    embed("warmup")
-    print("[seed] Embedding model ready", flush=True)
-
-    print("[seed] Embedding and storing centroids + templates...", flush=True)
     await router.seed_centroids(all_examples)
 
     # Verify and build clusters
     centroids = cache_store.get_all_intent_centroids()
-    print(f"[seed] {len(centroids)} centroids written to Redis", flush=True)
+    print(f"  → {len(centroids)} centroids written to Redis")
 
-    print("[seed] Building cluster index...", flush=True)
+    # Build cluster router
     cluster_router = ClusterRouter()
     cluster_router.build(centroids)
 
     if cluster_router.is_built:
-        print(f"[seed] {cluster_router.cluster_count} clusters built:", flush=True)
+        print(f"  → {cluster_router.cluster_count} clusters built")
         for info in cluster_router.get_cluster_info():
-            print(f"  Cluster '{info['label']}': {info['size']} intents", flush=True)
+            print(f"    Cluster '{info['label']}': {info['size']} intents")
     else:
-        print("[seed] Clustering skipped (below threshold)", flush=True)
+        print("  → Clustering skipped (below threshold)")
 
-    elapsed = time.time() - t0
-    print(f"[seed] ✓ Done in {elapsed:.1f}s — {len(all_examples)} examples across {len(intents)} intents", flush=True)
+    print(f"\n✓ Cache seeded with {len(all_examples)} examples across {len(intents)} intents!")
 
 
 if __name__ == "__main__":

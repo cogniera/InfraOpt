@@ -32,7 +32,7 @@ services:
     networks:
       - inferopt-net
 
-  # ── Node.js backend — handles /api/* stub routes ──────────────────────────────
+  # ── Node.js backend — proxies /api/* and /health to FastAPI ─────────────────
   backend:
     build:
       context: ./backend
