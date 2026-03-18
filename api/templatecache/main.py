@@ -393,7 +393,7 @@ class TemplateCache:
                         _trace("answer_extraction", extracted=True, response_preview=response[:80])
 
                     estimated_full = len(response.split()) * 2
-                    actual_used = from_inference * 40
+                    actual_used = from_inference * 5
                     savings = max(0.0, 1.0 - (actual_used / max(estimated_full, 1)))
 
                     if cluster_label:

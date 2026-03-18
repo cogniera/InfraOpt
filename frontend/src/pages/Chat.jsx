@@ -133,6 +133,14 @@ function StitchPanel({ stitch, intentId }) {
             </div>
           )}
 
+          {/* Cluster */}
+          {stitch.cluster && (
+            <div style={sectionStyle}>
+              <div style={labelStyle}>🗂 Cluster</div>
+              <code style={{ color: '#a78bfa', fontSize: 11 }}>{stitch.cluster}</code>
+            </div>
+          )}
+
           {/* No-slot case */}
           {!stitch.has_slots && gaps.length === 0 && (
             <div style={sectionStyle}>
@@ -316,11 +324,11 @@ function Message({ msg }) {
             <span style={{
               fontSize: 10, fontFamily: 'JetBrains Mono, monospace', fontWeight: 600,
               padding: '1px 6px', borderRadius: 4,
-              background: msg.cacheHit ? 'rgba(16,185,129,0.12)' : 'rgba(239,68,68,0.10)',
-              color: msg.cacheHit ? '#10b981' : '#ef4444',
-              border: `1px solid ${msg.cacheHit ? 'rgba(16,185,129,0.25)' : 'rgba(239,68,68,0.2)'}`,
+              background: !msg.cacheHit ? 'rgba(239,68,68,0.10)' : (msg.cacheHit && msg.slotsFromInference > 0) ? 'rgba(251,146,60,0.10)' : 'rgba(16,185,129,0.12)',
+              color:      !msg.cacheHit ? '#ef4444'              : (msg.cacheHit && msg.slotsFromInference > 0) ? '#fb923c'              : '#10b981',
+              border:     `1px solid ${!msg.cacheHit ? 'rgba(239,68,68,0.2)' : (msg.cacheHit && msg.slotsFromInference > 0) ? 'rgba(251,146,60,0.25)' : 'rgba(16,185,129,0.25)'}`,
             }}>
-              {msg.cacheHit ? '✓ cache hit' : '✗ cache miss'}
+              {!msg.cacheHit ? '✗ cache miss' : (msg.cacheHit && msg.slotsFromInference > 0) ? '◑ partial hit' : '✓ cache hit'}
             </span>
           )}
           {!isUser && msg.savingsRatio != null && (
@@ -481,7 +489,7 @@ function DashboardPanel({ stats, history, onClose }) {
   const W = 340, H = 150, PAD = 28;
   const MAX_Y = 10000;
   const toX = (i) => PAD + (i / Math.max(1, points.length - 1)) * (W - PAD - 8);
-  const toY = (v) => H - PAD - (Math.min(v, MAX_Y) / MAX_Y) * (H - PAD - 12);
+  const toY = (v) => H - PAD - (Math.max(0, Math.min(v, MAX_Y)) / MAX_Y) * (H - PAD - 12);
 
   const linePath = points.length > 1
     ? points.map((p, i) => `${i === 0 ? 'M' : 'L'}${toX(i).toFixed(1)},${toY(p.tokens_saved).toFixed(1)}`).join(' ')
@@ -709,6 +717,7 @@ export default function Chat() {
   const [loading, setLoading]         = useState(false);
   const [showPipeline, setShowPipeline] = useState(false);
   const [pipelineCacheHit, setPipelineCacheHit] = useState(false);
+  const [pipelineResolved, setPipelineResolved] = useState(false);
   const [stats, setStats]             = useState(null);
   const [history, setHistory]         = useState([]);
   const [showDashboard, setShowDashboard] = useState(false);
@@ -819,6 +828,7 @@ export default function Chat() {
     // Start animation immediately
     animDone.current = false;
     setPipelineCacheHit(false);
+    setPipelineResolved(false);
     setShowPipeline(true);
     setLoading(true);
     pendingChatId.current = chatId;
